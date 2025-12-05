@@ -1,32 +1,54 @@
 @echo off
 setlocal EnableDelayedExpansion
 
+rem =============================================================
+rem AI Agent - Windows helper script (all-in-one bootstrapper)
+rem -------------------------------------------------------------
+rem * Installs a private Python runtime into .\.python (no admin)
+rem * Creates/refreshes a virtual environment and installs deps
+rem * Installs Tesseract OCR (winget/choco/installer fallback)
+rem * Can pull the latest code and run the app
+rem -------------------------------------------------------------
+rem Recommended: Run this script from an elevated prompt for the
+rem best installation experience. It will still attempt user
+rem installations when admin rights are unavailable.
+rem =============================================================
+
 set "PROJECT_ROOT=%~dp0"
 pushd "%PROJECT_ROOT%"
 
+set "PY_VERSION=3.11.9"
+set "PY_INSTALLER_URL=https://www.python.org/ftp/python/%PY_VERSION%/python-%PY_VERSION%-amd64.exe"
+set "PYTHON_HOME=%PROJECT_ROOT%\.python"
 set "VENV_DIR=.venv"
 set "REQUIREMENTS=requirements.txt"
-set "PYTHON_CMD=python"
 set "APP_ENTRY=app\main.py"
+set "TESSERACT_INSTALLER_URL=https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.3.0.20230401.exe"
+set "TESSERACT_EXE=%ProgramFiles%\Tesseract-OCR\tesseract.exe"
+set "TESSERACT_EXE_X86=%ProgramFiles(x86)%\Tesseract-OCR\tesseract.exe"
 
 call :print_header
 
 :menu
 echo.
-echo [1] Create or refresh virtual environment
-echo [2] Install/Update Python dependencies
-echo [3] Update project from Git (pull)
-echo [4] Run AI Agent
-echo [5] Full setup (venv + deps + run)
-echo [6] Clean __pycache__ folders
+echo [1] Install local Python runtime into .\\.python
+echo [2] Create or refresh virtual environment
+echo [3] Install/Update Python dependencies
+echo [4] Install/Verify Tesseract OCR
+echo [5] Update project from Git (pull)
+echo [6] Run AI Agent
+echo [7] Full setup (Python + Tesseract + venv + deps + run)
+echo [8] Clean __pycache__ folders
 echo [0] Exit
 set /p choice="Select an option: "
-if "%choice%"=="1" call :setup_venv & goto menu
-if "%choice%"=="2" call :install_requirements & goto menu
-if "%choice%"=="3" call :update_project & goto menu
-if "%choice%"=="4" call :run_app & goto menu
-if "%choice%"=="5" call :install_requirements && call :run_app & goto menu
-if "%choice%"=="6" call :clean_pycache & goto menu
+if "%choice%"=="1" call :ensure_local_python & goto menu
+if "%choice%"=="2" call :setup_venv & goto menu
+if "%choice%"=="3" call :install_requirements & goto menu
+if "%choice%"=="4" call :install_tesseract & goto menu
+if "%choice%"=="5" call :update_project & goto menu
+if "%choice%"=="6" call :run_app & goto menu
+if "%choice%"=="7" call :full_setup & goto menu
+if "%choice%"=="8" call :clean_pycache & goto menu
 if "%choice%"=="0" goto end
 
 echo.
@@ -35,39 +57,62 @@ goto menu
 
 :print_header
 echo ==================================================
-echo  AI Agent - Windows helper script (Phase 2)
+echo  AI Agent - Windows helper script (all-in-one)
 echo  Location: %PROJECT_ROOT%
+echo  Python target: %PYTHON_HOME%
 echo ==================================================
 exit /b 0
 
-:ensure_python
-where %PYTHON_CMD% >nul 2>nul
+:detect_python
+set "PYTHON_CMD="
+if exist "%PYTHON_HOME%\python.exe" set "PYTHON_CMD=%PYTHON_HOME%\python.exe"
+if not defined PYTHON_CMD (
+    where python >nul 2>nul && for /f "delims=" %%p in ('where python') do if not defined PYTHON_CMD set "PYTHON_CMD=%%p"
+)
+if not defined PYTHON_CMD exit /b 1
+exit /b 0
+
+:ensure_local_python
+if exist "%PYTHON_HOME%\python.exe" (
+    set "PYTHON_CMD=%PYTHON_HOME%\python.exe"
+    echo Found project-local Python at %PYTHON_CMD%.
+    exit /b 0
+)
+
+echo Downloading Python %PY_VERSION% installer...
+set "PY_INSTALLER=%TEMP%\python-%PY_VERSION%-amd64.exe"
+powershell -NoLogo -NoProfile -Command "Invoke-WebRequest -Uri '%PY_INSTALLER_URL%' -OutFile '%PY_INSTALLER%'" >nul
 if errorlevel 1 (
-    echo Python 3.10+ is required but not found on PATH.
-    echo Install Python from https://www.python.org/downloads/ and try again.
+    echo Failed to download Python installer.
     exit /b 1
 )
-for /f "tokens=2 delims= " %%v in ('%PYTHON_CMD% -V 2^>^&1') do set "PYTHON_VERSION=%%v"
-for /f "tokens=1,2 delims=." %%m in ("!PYTHON_VERSION!") do (
-    set "PY_MAJOR=%%m"
-    set "PY_MINOR=%%n"
-)
-if not defined PY_MAJOR exit /b 0
-if !PY_MAJOR! LSS 3 (
-    echo Python 3.10+ is required. Found version !PYTHON_VERSION!.
+
+echo Installing private Python to %PYTHON_HOME% ...
+"%PY_INSTALLER%" /quiet InstallAllUsers=0 PrependPath=0 Include_pip=1 TargetDir="%PYTHON_HOME%"
+if errorlevel 1 (
+    echo Python installation failed.
     exit /b 1
 )
-if !PY_MAJOR! EQU 3 if !PY_MINOR! LSS 10 (
-    echo Python 3.10+ is required. Found version !PYTHON_VERSION!.
-    exit /b 1
+
+del "%PY_INSTALLER%" >nul 2>nul
+set "PYTHON_CMD=%PYTHON_HOME%\python.exe"
+echo Installed Python to %PYTHON_CMD%
+%PYTHON_CMD% -m pip config set global.no-cache-dir true >nul 2>nul
+exit /b 0
+
+:ensure_python_available
+call :detect_python
+if errorlevel 1 (
+    echo Python not found. Attempting local installation...
+    call :ensure_local_python || exit /b 1
 )
 exit /b 0
 
 :setup_venv
-call :ensure_python || exit /b 1
+call :ensure_python_available || exit /b 1
 if not exist "%VENV_DIR%\Scripts\activate.bat" (
     echo Creating virtual environment at "%VENV_DIR%"...
-    %PYTHON_CMD% -m venv "%VENV_DIR%"
+    "%PYTHON_CMD%" -m venv "%VENV_DIR%"
     if errorlevel 1 (
         echo Failed to create virtual environment.
         exit /b 1
@@ -81,14 +126,73 @@ exit /b 0
 :install_requirements
 call :setup_venv || exit /b 1
 call "%VENV_DIR%\Scripts\activate.bat"
-%PYTHON_CMD% -m pip install --upgrade pip
+"%PYTHON_CMD%" -m pip install --upgrade pip
 if exist "%REQUIREMENTS%" (
-    %PYTHON_CMD% -m pip install -r "%REQUIREMENTS%"
+    "%PYTHON_CMD%" -m pip install -r "%REQUIREMENTS%"
     if errorlevel 1 exit /b 1
 ) else (
     echo %REQUIREMENTS% not found. Cannot install dependencies.
     exit /b 1
 )
+exit /b 0
+
+:install_tesseract
+echo Checking for Tesseract OCR...
+if exist "%TESSERACT_EXE%" (
+    echo Found at "%TESSERACT_EXE%".
+    exit /b 0
+)
+if exist "%TESSERACT_EXE_X86%" (
+    echo Found at "%TESSERACT_EXE_X86%".
+    exit /b 0
+)
+
+where tesseract >nul 2>nul
+if not errorlevel 1 (
+    echo Tesseract already available on PATH.
+    exit /b 0
+)
+
+echo Attempting installation via winget...
+winget --version >nul 2>nul
+if not errorlevel 1 (
+    winget install -e --id UB-Mannheim.TesseractOCR --accept-package-agreements --accept-source-agreements
+    if not errorlevel 1 exit /b 0
+)
+
+echo Attempting installation via Chocolatey...
+choco -v >nul 2>nul
+if not errorlevel 1 (
+    choco install tesseract --yes
+    if not errorlevel 1 exit /b 0
+)
+
+echo Downloading Tesseract installer (UB Mannheim build)...
+set "TESS_INSTALLER=%TEMP%\tesseract-ocr-w64-setup.exe"
+powershell -NoLogo -NoProfile -Command "Invoke-WebRequest -Uri '%TESSERACT_INSTALLER_URL%' -OutFile '%TESS_INSTALLER%'" >nul
+if errorlevel 1 (
+    echo Failed to download Tesseract installer.
+    exit /b 1
+)
+
+echo Running installer silently...
+"%TESS_INSTALLER%" /quiet
+if errorlevel 1 (
+    echo Tesseract installation failed.
+    exit /b 1
+)
+del "%TESS_INSTALLER%" >nul 2>nul
+
+if exist "%TESSERACT_EXE%" (
+    echo Installed Tesseract at "%TESSERACT_EXE%".
+    exit /b 0
+)
+if exist "%TESSERACT_EXE_X86%" (
+    echo Installed Tesseract at "%TESSERACT_EXE_X86%".
+    exit /b 0
+)
+
+echo Tesseract installation completed. You may need to restart the terminal to refresh PATH.
 exit /b 0
 
 :update_project
@@ -105,18 +209,17 @@ if not exist "%APP_ENTRY%" (
     echo Could not find application entry at %APP_ENTRY%.
     exit /b 1
 )
-call :setup_venv || exit /b 1
+call :install_requirements || exit /b 1
 call "%VENV_DIR%\Scripts\activate.bat"
-if not exist "%REQUIREMENTS%" (
-    echo %REQUIREMENTS% missing. Please ensure dependencies list is present.
-    exit /b 1
-)
-for /f "tokens=1" %%i in ('%PYTHON_CMD% -m pip show PyQt5 2^>^&1 ^| find /c "Name"') do set "HAS_PYQT=%%i"
-if "!HAS_PYQT!"=="0" (
-    echo Installing dependencies before launch...
-    call :install_requirements || exit /b 1
-)
-%PYTHON_CMD% "%APP_ENTRY%"
+"%PYTHON_CMD%" "%APP_ENTRY%"
+exit /b %errorlevel%
+
+:full_setup
+echo Running full setup...
+call :ensure_local_python || exit /b 1
+call :install_tesseract || exit /b 1
+call :install_requirements || exit /b 1
+call :run_app
 exit /b %errorlevel%
 
 :clean_pycache
