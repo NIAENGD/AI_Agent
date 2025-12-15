@@ -239,7 +239,13 @@ if not exist "%PROJECT_ROOT%\\.git" (
 )
 
 pushd "%PROJECT_ROOT%" >nul
-git pull
+git rev-parse --abbrev-ref --symbolic-full-name @{u} >nul 2>nul
+if errorlevel 1 (
+    echo No upstream configured for current branch. Defaulting to origin/main...
+    git pull origin main
+) else (
+    git pull
+)
 set "GIT_STATUS=%errorlevel%"
 popd >nul
 exit /b %GIT_STATUS%
