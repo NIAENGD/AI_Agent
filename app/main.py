@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
@@ -170,8 +170,10 @@ class OCRApp(QtWidgets.QWidget):
         self._selected_window: Optional[SelectedWindow] = None
         self._captured_image: Optional[Image.Image] = None
         self._tesseract_path: Optional[str] = None
+        self._dependency_state: Dict[str, bool] = {}
 
         self._build_ui()
+        self._check_dependencies()
 
     def _build_ui(self) -> None:
         header = QtWidgets.QLabel(
@@ -190,14 +192,14 @@ class OCRApp(QtWidgets.QWidget):
         self._process_btn.setEnabled(False)
         self._process_btn.clicked.connect(self.process_capture)
 
-        start_btn = QtWidgets.QPushButton("Start")
-        start_btn.clicked.connect(self.select_window)
+        self._start_btn = QtWidgets.QPushButton("Start")
+        self._start_btn.clicked.connect(self.select_window)
 
         settings_btn = QtWidgets.QPushButton("Settings")
         settings_btn.clicked.connect(self.open_settings)
 
         button_col = QtWidgets.QVBoxLayout()
-        button_col.addWidget(start_btn)
+        button_col.addWidget(self._start_btn)
         button_col.addWidget(settings_btn)
         button_col.addStretch()
         button_col.addWidget(self._take_btn)
@@ -214,6 +216,44 @@ class OCRApp(QtWidgets.QWidget):
         main_layout.addLayout(content_layout)
         self.setLayout(main_layout)
 
+    def _check_dependencies(self) -> None:
+        """Detect missing modules early and give a single actionable message."""
+
+        self._dependency_state = {
+            "pygetwindow": gw is not None,
+            "pyautogui": pyautogui is not None,
+            "pillow": Image is not None and PilImageQt is not None,
+            "pytesseract": pytesseract is not None,
+        }
+
+        missing = [name for name, ok in self._dependency_state.items() if not ok]
+        if missing:
+            install_hint = "pip install -r requirements.txt"
+            message = (
+                "The following Python packages are required but not available: \n"
+                + "\n".join(f" • {name}" for name in missing)
+                + "\n\nInstall them with:\n"
+                + install_hint
+            )
+            QtWidgets.QMessageBox.critical(self, "Missing dependencies", message)
+
+        self._start_btn.setEnabled(self._dependency_state.get("pygetwindow", False))
+        if not self._dependency_state.get("pygetwindow", False):
+            self.status_message("Install pygetwindow to enable window selection.")
+
+    def _ensure_dependency(self, key: str, friendly_name: str) -> bool:
+        """Show a clear message if the dependency is missing and stop the action."""
+
+        if self._dependency_state.get(key, False):
+            return True
+
+        QtWidgets.QMessageBox.critical(
+            self,
+            "Missing dependency",
+            f"{friendly_name} is not installed. Please run: pip install -r requirements.txt",
+        )
+        return False
+
     def open_settings(self) -> None:
         dialog = SettingsDialog(self._tesseract_path, self)
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
@@ -222,8 +262,7 @@ class OCRApp(QtWidgets.QWidget):
                 pytesseract.pytesseract.tesseract_cmd = self._tesseract_path
 
     def select_window(self) -> None:
-        if gw is None:
-            QtWidgets.QMessageBox.critical(self, "Missing dependency", "Install pygetwindow to list windows.")
+        if not self._ensure_dependency("pygetwindow", "pygetwindow"):
             return
         dialog = WindowSelectionDialog(self)
         selection = dialog.get_selection()
@@ -238,11 +277,9 @@ class OCRApp(QtWidgets.QWidget):
         if self._selected_window is None:
             QtWidgets.QMessageBox.information(self, "No window", "Please select a window first.")
             return
-        if pyautogui is None:
-            QtWidgets.QMessageBox.critical(self, "Missing dependency", "Install pyautogui to capture screenshots.")
+        if not self._ensure_dependency("pyautogui", "pyautogui"):
             return
-        if PilImageQt is None:
-            QtWidgets.QMessageBox.critical(self, "Missing dependency", "Install Pillow for image handling.")
+        if not self._ensure_dependency("pillow", "Pillow"):
             return
 
         try:
@@ -262,8 +299,7 @@ class OCRApp(QtWidgets.QWidget):
         if self._captured_image is None:
             QtWidgets.QMessageBox.information(self, "No capture", "Take a capture first.")
             return
-        if pytesseract is None:
-            QtWidgets.QMessageBox.critical(self, "Missing dependency", "Install pytesseract for OCR.")
+        if not self._ensure_dependency("pytesseract", "pytesseract"):
             return
 
         try:

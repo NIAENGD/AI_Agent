@@ -47,6 +47,7 @@ python app/main.py
 4. Use **Settings** to set the `tesseract.exe` path if it is not on `PATH`.
 
 ## Notes
-- The app degrades gracefully if dependencies are missing by prompting the user to install them.
+- On startup the app now performs a dependency check (PyQt5, pygetwindow, pyautogui, Pillow, pytesseract) and shows a single
+  actionable message if anything is missing—run `pip install -r requirements.txt` to resolve them.
 - Screen capture relies on `pyautogui`; ensure the selected window is not minimized.
 - OCR accuracy depends on your Tesseract installation and language packs.
