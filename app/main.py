@@ -29,10 +29,11 @@ except Exception:  # pragma: no cover - optional dependency
     pytesseract = None
 
 try:  # type: ignore
-    from PIL import Image, ImageQt
+    from PIL import Image
+    from PIL.ImageQt import ImageQt as PilImageQt
 except Exception:  # pragma: no cover - optional dependency
     Image = None
-    ImageQt = None
+    PilImageQt = None
 
 
 @dataclass
@@ -240,7 +241,7 @@ class OCRApp(QtWidgets.QWidget):
         if pyautogui is None:
             QtWidgets.QMessageBox.critical(self, "Missing dependency", "Install pyautogui to capture screenshots.")
             return
-        if ImageQt is None:
+        if PilImageQt is None:
             QtWidgets.QMessageBox.critical(self, "Missing dependency", "Install Pillow for image handling.")
             return
 
@@ -251,7 +252,7 @@ class OCRApp(QtWidgets.QWidget):
             return
 
         self._captured_image = screenshot
-        qimage = ImageQt.ImageQt(screenshot)
+        qimage = PilImageQt(screenshot)
         pixmap = QtGui.QPixmap.fromImage(qimage)
         self._preview.update_image(pixmap)
         self._process_btn.setEnabled(True)
