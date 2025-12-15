@@ -30,6 +30,7 @@ set "TESSERACT_EXE=%ProgramFiles%\Tesseract-OCR\tesseract.exe"
 set "TESSERACT_EXE_X86=%ProgramFiles(x86)%\Tesseract-OCR\tesseract.exe"
 
 call :print_header
+call :enforce_startup_update || goto end
 
 :menu
 echo.
@@ -63,6 +64,26 @@ echo  AI Agent - Windows helper script (all-in-one)
 echo  Location: %PROJECT_ROOT%
 echo  Python target: %PYTHON_HOME%
 echo ==================================================
+exit /b 0
+
+:check_internet
+powershell -NoLogo -NoProfile -Command "if (Test-Connection -Quiet -Count 1 8.8.8.8) { exit 0 } else { exit 1 }" >nul
+exit /b %errorlevel%
+
+:enforce_startup_update
+echo Verifying internet connectivity for mandatory update...
+call :check_internet
+if errorlevel 1 (
+    echo No internet connection detected. Exiting to enforce mandatory updates.
+    exit /b 1
+)
+echo Internet connection detected. Pulling latest changes...
+call :update_project
+if errorlevel 1 (
+    echo Git update failed. Resolve the issue and rerun the script.
+    exit /b 1
+)
+echo Repository is up to date.
 exit /b 0
 
 :detect_python
@@ -203,8 +224,11 @@ if errorlevel 1 (
     echo Git is not available. Install Git to pull updates.
     exit /b 1
 )
-git -C "%PROJECT_ROOT%" pull
-exit /b %errorlevel%
+pushd "%PROJECT_ROOT%" >nul
+git pull
+set "GIT_STATUS=%errorlevel%"
+popd >nul
+exit /b %GIT_STATUS%
 
 :run_app
 if not exist "%APP_ENTRY%" (
