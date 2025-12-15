@@ -14,7 +14,9 @@ rem best installation experience. It will still attempt user
 rem installations when admin rights are unavailable.
 rem =============================================================
 
+rem Resolve project root without a trailing backslash to avoid escaping issues
 set "PROJECT_ROOT=%~dp0"
+if "%PROJECT_ROOT:~-1%"=="\\" set "PROJECT_ROOT=%PROJECT_ROOT:~0,-1%"
 pushd "%PROJECT_ROOT%"
 
 set "PY_VERSION=3.11.9"
