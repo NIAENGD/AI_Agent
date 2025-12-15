@@ -16,7 +16,7 @@ A Windows-focused desktop utility that lets a user pick any open window, take a 
 
 ### One-file Windows setup (.bat)
 Use the included `windows_setup.bat` file to handle setup, updates, and running the app:
-1. Place `windows_setup.bat` in the repository root (next to `app/` and `requirements.txt`). If you only downloaded the script, drop it into the cloned/extracted project folder.
+1. For automatic updates, put **only** `windows_setup.bat` into an empty folder and run it. The script will clone the latest project into that folder. If you already cloned the repo with Git, place the script in the repository root (next to `app/` and `requirements.txt`).
 2. Double-click the file or run it from `cmd` with `windows_setup.bat`.
 3. Choose from the menu:
    - **Create or refresh virtual environment**: sets up `.venv` with the correct Python interpreter.

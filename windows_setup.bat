@@ -227,6 +227,14 @@ if errorlevel 1 (
 )
 
 if not exist "%PROJECT_ROOT%\\.git" (
+    call :workdir_ready_for_clone
+    if errorlevel 1 (
+        echo No git repository found and this folder already has files.
+        echo For auto-updates, place ONLY windows_setup.bat in an empty folder and rerun.
+        echo The script will clone the latest project automatically.
+        exit /b 1
+    )
+
     echo No git repository detected. Bootstrapping from %GIT_REMOTE% ...
     pushd "%PROJECT_ROOT%" >nul
     git init
@@ -249,6 +257,15 @@ if errorlevel 1 (
 set "GIT_STATUS=%errorlevel%"
 popd >nul
 exit /b %GIT_STATUS%
+
+:workdir_ready_for_clone
+set "HAS_FOREIGN_FILES=0"
+for /f "delims=" %%f in ('dir /b') do (
+    if /i not "%%f"=="windows_setup.bat" if /i not "%%f"=="." if /i not "%%f"==".." (
+        set "HAS_FOREIGN_FILES=1"
+    )
+)
+if %HAS_FOREIGN_FILES%==0 ( exit /b 0 ) else ( exit /b 1 )
 
 :run_app
 if not exist "%APP_ENTRY%" (
