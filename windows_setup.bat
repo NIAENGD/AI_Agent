@@ -25,6 +25,7 @@ set "PYTHON_HOME=%PROJECT_ROOT%\.python"
 set "VENV_DIR=.venv"
 set "REQUIREMENTS=requirements.txt"
 set "APP_ENTRY=app\main.py"
+set "GIT_REMOTE=https://github.com/NIAENGD/AI_Agent.git"
 set "TESSERACT_INSTALLER_URL=https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.3.0.20230401.exe"
 set "TESSERACT_EXE=%ProgramFiles%\Tesseract-OCR\tesseract.exe"
 set "TESSERACT_EXE_X86=%ProgramFiles(x86)%\Tesseract-OCR\tesseract.exe"
@@ -224,6 +225,19 @@ if errorlevel 1 (
     echo Git is not available. Install Git to pull updates.
     exit /b 1
 )
+
+if not exist "%PROJECT_ROOT%\\.git" (
+    echo No git repository detected. Bootstrapping from %GIT_REMOTE% ...
+    pushd "%PROJECT_ROOT%" >nul
+    git init
+    git remote add origin "%GIT_REMOTE%" >nul 2>nul
+    git fetch origin
+    git checkout -B main origin/main
+    set "GIT_STATUS=%errorlevel%"
+    popd >nul
+    exit /b %GIT_STATUS%
+)
+
 pushd "%PROJECT_ROOT%" >nul
 git pull
 set "GIT_STATUS=%errorlevel%"
