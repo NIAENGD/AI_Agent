@@ -15,7 +15,14 @@ A Windows-focused desktop utility that lets a user pick any open window, take a 
 - Dependencies listed in `requirements.txt`.
 
 ### One-file Windows setup (.bat)
-Use the included `windows_setup.bat` file to handle setup, updates, and running the app:
+Use the included `windows_setup.bat` file to handle setup, updates, and running the app. The script installs everything into the
+project folder so the entire runtime stays self-contained:
+
+- Private Python runtime at `.\\.python`.
+- Virtual environment and dependencies in `.venv`.
+- Tesseract OCR installed under `.\\.tesseract` and automatically used by the app if present.
+
+Workflow:
 1. For automatic updates, put **only** `windows_setup.bat` into an empty folder and run it. The script will clone the latest project into that folder. If you already cloned the repo with Git, place the script in the repository root (next to `app/` and `requirements.txt`).
 2. Double-click the file or run it from `cmd` with `windows_setup.bat`.
 3. Choose from the menu:
@@ -26,7 +33,7 @@ Use the included `windows_setup.bat` file to handle setup, updates, and running 
    - **Full setup (venv + deps + run)**: performs install steps and starts the app in one go.
    - **Clean __pycache__ folders**: removes Python bytecode caches.
 
-The script verifies Python 3.10+ is on `PATH`. Git is only required for the "Update project" option. After the app launches, use **Settings** to point to `tesseract.exe` if it is not on `PATH`.
+The script installs its own Python runtime and Tesseract locally, so no system-wide tools are required. Git is only needed for the "Update project" option. After the app launches, it automatically prefers the bundled `.tesseract\\tesseract.exe`; you can still use **Settings** to override the executable path if needed.
 
 ### Manual install (without the .bat helper)
 Install dependencies:
