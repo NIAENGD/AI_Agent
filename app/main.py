@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from PyQt5 import QtCore, QtGui, QtWidgets
@@ -169,10 +170,11 @@ class OCRApp(QtWidgets.QWidget):
 
         self._selected_window: Optional[SelectedWindow] = None
         self._captured_image: Optional[Image.Image] = None
-        self._tesseract_path: Optional[str] = None
+        self._tesseract_path: Optional[str] = self._detect_local_tesseract()
         self._dependency_state: Dict[str, bool] = {}
 
         self._build_ui()
+        self._apply_tesseract_path()
         self._check_dependencies()
 
     def _build_ui(self) -> None:
@@ -241,6 +243,17 @@ class OCRApp(QtWidgets.QWidget):
         if not self._dependency_state.get("pygetwindow", False):
             self.status_message("Install pygetwindow to enable window selection.")
 
+    def _detect_local_tesseract(self) -> Optional[str]:
+        repo_root = Path(__file__).resolve().parent.parent
+        candidate = repo_root / ".tesseract" / "tesseract.exe"
+        if candidate.exists():
+            return str(candidate)
+        return None
+
+    def _apply_tesseract_path(self) -> None:
+        if pytesseract and self._tesseract_path:
+            pytesseract.pytesseract.tesseract_cmd = self._tesseract_path
+
     def _ensure_dependency(self, key: str, friendly_name: str) -> bool:
         """Show a clear message if the dependency is missing and stop the action."""
 
@@ -258,8 +271,7 @@ class OCRApp(QtWidgets.QWidget):
         dialog = SettingsDialog(self._tesseract_path, self)
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             self._tesseract_path = dialog.tesseract_path
-            if pytesseract and self._tesseract_path:
-                pytesseract.pytesseract.tesseract_cmd = self._tesseract_path
+            self._apply_tesseract_path()
 
     def select_window(self) -> None:
         if not self._ensure_dependency("pygetwindow", "pygetwindow"):

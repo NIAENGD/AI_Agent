@@ -6,7 +6,7 @@ rem AI Agent - Windows helper script (all-in-one bootstrapper)
 rem -------------------------------------------------------------
 rem * Installs a private Python runtime into .\.python (no admin)
 rem * Creates/refreshes a virtual environment and installs deps
-rem * Installs Tesseract OCR (winget/choco/installer fallback)
+rem * Installs Tesseract OCR into .\.tesseract (no admin)
 rem * Can pull the latest code and run the app
 rem -------------------------------------------------------------
 rem Recommended: Run this script from an elevated prompt for the
@@ -23,12 +23,13 @@ set "PY_VERSION=3.11.9"
 set "PY_INSTALLER_URL=https://www.python.org/ftp/python/%PY_VERSION%/python-%PY_VERSION%-amd64.exe"
 set "PYTHON_HOME=%PROJECT_ROOT%\.python"
 set "VENV_DIR=.venv"
+set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 set "REQUIREMENTS=requirements.txt"
 set "APP_ENTRY=app\main.py"
 set "GIT_REMOTE=https://github.com/NIAENGD/AI_Agent.git"
 set "TESSERACT_INSTALLER_URL=https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.3.0.20230401.exe"
-set "TESSERACT_EXE=%ProgramFiles%\Tesseract-OCR\tesseract.exe"
-set "TESSERACT_EXE_X86=%ProgramFiles(x86)%\Tesseract-OCR\tesseract.exe"
+set "TESSERACT_HOME=%PROJECT_ROOT%\.tesseract"
+set "TESSERACT_EXE=%TESSERACT_HOME%\tesseract.exe"
 
 call :print_header
 call :enforce_startup_update || goto end
@@ -125,12 +126,8 @@ echo Installed Python to %PYTHON_CMD%
 exit /b 0
 
 :ensure_python_available
-call :detect_python
-if errorlevel 1 (
-    echo Python not found. Attempting local installation...
-    call :ensure_local_python || exit /b 1
-)
-exit /b 0
+call :ensure_local_python
+exit /b %errorlevel%
 
 :setup_venv
 call :ensure_python_available || exit /b 1
@@ -150,9 +147,9 @@ exit /b 0
 :install_requirements
 call :setup_venv || exit /b 1
 call "%VENV_DIR%\Scripts\activate.bat"
-"%PYTHON_CMD%" -m pip install --upgrade pip
+"%VENV_PYTHON%" -m pip install --upgrade pip
 if exist "%REQUIREMENTS%" (
-    "%PYTHON_CMD%" -m pip install -r "%REQUIREMENTS%"
+    "%VENV_PYTHON%" -m pip install -r "%REQUIREMENTS%"
     if errorlevel 1 exit /b 1
 ) else (
     echo %REQUIREMENTS% not found. Cannot install dependencies.
@@ -163,32 +160,8 @@ exit /b 0
 :install_tesseract
 echo Checking for Tesseract OCR...
 if exist "%TESSERACT_EXE%" (
-    echo Found at "%TESSERACT_EXE%".
+    echo Found project-local Tesseract at "%TESSERACT_EXE%".
     exit /b 0
-)
-if exist "%TESSERACT_EXE_X86%" (
-    echo Found at "%TESSERACT_EXE_X86%".
-    exit /b 0
-)
-
-where tesseract >nul 2>nul
-if not errorlevel 1 (
-    echo Tesseract already available on PATH.
-    exit /b 0
-)
-
-echo Attempting installation via winget...
-winget --version >nul 2>nul
-if not errorlevel 1 (
-    winget install -e --id UB-Mannheim.TesseractOCR --accept-package-agreements --accept-source-agreements
-    if not errorlevel 1 exit /b 0
-)
-
-echo Attempting installation via Chocolatey...
-choco -v >nul 2>nul
-if not errorlevel 1 (
-    choco install tesseract --yes
-    if not errorlevel 1 exit /b 0
 )
 
 echo Downloading Tesseract installer (UB Mannheim build)...
@@ -199,8 +172,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo Running installer silently...
-"%TESS_INSTALLER%" /quiet
+if not exist "%TESSERACT_HOME%" mkdir "%TESSERACT_HOME%" >nul 2>nul
+echo Running installer silently into %TESSERACT_HOME% ...
+"%TESS_INSTALLER%" /quiet /DIR="%TESSERACT_HOME%"
 if errorlevel 1 (
     echo Tesseract installation failed.
     exit /b 1
@@ -208,16 +182,12 @@ if errorlevel 1 (
 del "%TESS_INSTALLER%" >nul 2>nul
 
 if exist "%TESSERACT_EXE%" (
-    echo Installed Tesseract at "%TESSERACT_EXE%".
-    exit /b 0
-)
-if exist "%TESSERACT_EXE_X86%" (
-    echo Installed Tesseract at "%TESSERACT_EXE_X86%".
+    echo Installed project-local Tesseract at "%TESSERACT_EXE%".
     exit /b 0
 )
 
-echo Tesseract installation completed. You may need to restart the terminal to refresh PATH.
-exit /b 0
+echo Tesseract installation completed, but executable was not found at %TESSERACT_EXE%.
+exit /b 1
 
 :update_project
 git --version >nul 2>nul
@@ -273,8 +243,11 @@ if not exist "%APP_ENTRY%" (
     exit /b 1
 )
 call :install_requirements || exit /b 1
+call :install_tesseract || exit /b 1
 call "%VENV_DIR%\Scripts\activate.bat"
-"%PYTHON_CMD%" "%APP_ENTRY%"
+set "PATH=%TESSERACT_HOME%;%PATH%"
+set "TESSERACT_CMD=%TESSERACT_EXE%"
+"%VENV_PYTHON%" "%APP_ENTRY%"
 exit /b %errorlevel%
 
 :full_setup
