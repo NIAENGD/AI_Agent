@@ -3,4 +3,4 @@ pygetwindow==0.0.9
 pyautogui==0.9.54
 pytesseract==0.3.10
 Pillow==10.4.0
-pywin32==306
+pywin32==310
