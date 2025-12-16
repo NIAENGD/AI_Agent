@@ -226,9 +226,11 @@ def _capture_selected_window(selection: SelectedWindow) -> Optional["Image.Image
     if Image is None:
         raise RuntimeError("Install Pillow to capture windows.")
 
+    _refresh_window_bounds(selection)
+
     if selection.hwnd:
         try:
-            win32_image = _capture_hwnd(selection.hwnd, selection.width, selection.height)
+            win32_image = _capture_hwnd(selection.hwnd)
             if win32_image:
                 return win32_image
         except Exception:
@@ -243,7 +245,27 @@ def _capture_selected_window(selection: SelectedWindow) -> Optional["Image.Image
     return screenshot
 
 
-def _capture_hwnd(hwnd: int, width: int, height: int) -> Optional["Image.Image"]:
+def _refresh_window_bounds(selection: SelectedWindow) -> None:
+    if not selection.hwnd or not _has_pywin32():
+        return
+
+    import win32gui  # type: ignore
+
+    try:
+        left, top, right, bottom = win32gui.GetWindowRect(selection.hwnd)
+    except Exception:
+        return
+
+    width = max(0, right - left)
+    height = max(0, bottom - top)
+    if width and height:
+        selection.left = left
+        selection.top = top
+        selection.width = width
+        selection.height = height
+
+
+def _capture_hwnd(hwnd: int) -> Optional["Image.Image"]:
     if not _has_pywin32():
         return None
 
@@ -251,10 +273,21 @@ def _capture_hwnd(hwnd: int, width: int, height: int) -> Optional["Image.Image"]
     import win32gui  # type: ignore
     import win32ui  # type: ignore
 
+    try:
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+    except Exception:
+        return None
+
+    width = max(0, right - left)
+    height = max(0, bottom - top)
+    if not width or not height:
+        return None
+
     hwnd_dc = win32gui.GetWindowDC(hwnd)
     if not hwnd_dc:
         return None
 
+    bitmap = None
     try:
         window_dc = win32ui.CreateDCFromHandle(hwnd_dc)
         mem_dc = window_dc.CreateCompatibleDC()
@@ -262,7 +295,7 @@ def _capture_hwnd(hwnd: int, width: int, height: int) -> Optional["Image.Image"]
         bitmap.CreateCompatibleBitmap(window_dc, width, height)
         mem_dc.SelectObject(bitmap)
 
-        result = win32gui.PrintWindow(hwnd, mem_dc.GetSafeHdc(), 0)
+        result = win32gui.PrintWindow(hwnd, mem_dc.GetSafeHdc(), win32con.PW_RENDERFULLCONTENT)
         if result != 1:
             return None
 
@@ -279,7 +312,8 @@ def _capture_hwnd(hwnd: int, width: int, height: int) -> Optional["Image.Image"]
         )
         return image.crop((0, 0, width, height))
     finally:
-        win32gui.DeleteObject(bitmap.GetHandle())
+        if bitmap:
+            win32gui.DeleteObject(bitmap.GetHandle())
         mem_dc.DeleteDC()
         window_dc.DeleteDC()
         win32gui.ReleaseDC(hwnd, hwnd_dc)
@@ -427,12 +461,22 @@ _PAGE_TEMPLATE = """
     #crop-overlay { position: absolute; border: 2px dashed #ff5c00; background: rgba(255, 92, 0, 0.2); display: none; pointer-events: none; }
     #captureImage { max-width: 100%; border-radius: 8px; border: 1px solid #ddd; }
     pre { background: #f0f0f0; padding: 12px; border-radius: 8px; white-space: pre-wrap; }
+    #orientationNotice { display: none; margin-top: 10px; background: #ff5c00; color: white; padding: 8px 12px; border-radius: 8px; }
+    body.portrait-warning #orientationNotice { display: block; }
   </style>
 </head>
 <body>
   <header>
-    <h1>AI Agent - Web Capture & OCR</h1>
-    <div>Workflow: Select a window → Capture → (Optional) Crop → OCR.</div>
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+      <div>
+        <h1 style="margin-bottom:4px;">AI Agent - Web Capture & OCR</h1>
+        <div>Workflow: Select a window → Capture → (Optional) Crop → OCR.</div>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button id="fullscreenBtn" type="button" class="secondary">Fullscreen</button>
+      </div>
+    </div>
+    <div id="orientationNotice">Best viewed in landscape on mobile. Rotate your device if needed.</div>
   </header>
   <main>
     <section>
@@ -472,10 +516,11 @@ _PAGE_TEMPLATE = """
         <div id=\"crop-overlay\"></div>
       </div>
       {% endif %}
-      <div style=\"margin-top: 12px; display:flex; gap:8px; flex-wrap:wrap;\">
-        <button id=\"clearCropBtn\" type=\"button\" class=\"secondary\">Clear crop</button>
-        <button id=\"ocrBtn\" type=\"button\">Run OCR</button>
-      </div>
+        <div style=\"margin-top: 12px; display:flex; gap:8px; flex-wrap:wrap;\">
+          <button id=\"startCropBtn\" type=\"button\">Select crop area</button>
+          <button id=\"clearCropBtn\" type=\"button\" class=\"secondary\">Clear crop</button>
+          <button id=\"ocrBtn\" type=\"button\">Run OCR</button>
+        </div>
       <div id=\"cropInfo\" style=\"margin-top:6px; color:#444;\"></div>
     </section>
 
@@ -486,9 +531,11 @@ _PAGE_TEMPLATE = """
   </main>
 
   <script>
-    let cropBox = null;
-    let naturalWidth = 0;
-    let naturalHeight = 0;
+      let cropBox = null;
+      let naturalWidth = 0;
+      let naturalHeight = 0;
+      let isSelectingCrop = false;
+      let firstCropPoint = null;
 
     async function refreshWindows() {
       const res = await fetch('/api/windows');
@@ -570,88 +617,116 @@ _PAGE_TEMPLATE = """
       document.getElementById('ocrOutput').textContent = data.text || '';
     }
 
-    function clearCrop() {
-      cropBox = null;
-      document.getElementById('cropInfo').textContent = 'No crop set; OCR will use the full image.';
-      const overlay = document.getElementById('crop-overlay');
-      overlay.style.display = 'none';
-    }
+      function clearCrop() {
+        cropBox = null;
+        firstCropPoint = null;
+        isSelectingCrop = false;
+        document.getElementById('cropInfo').textContent = 'No crop set; OCR will use the full image.';
+        const overlay = document.getElementById('crop-overlay');
+        overlay.style.display = 'none';
+      }
 
-    function setupCropping() {
-      const img = document.getElementById('captureImage');
-      const overlay = document.getElementById('crop-overlay');
-      let start = null;
-
-      img.addEventListener('load', () => {
-        naturalWidth = img.naturalWidth;
-        naturalHeight = img.naturalHeight;
-      });
-
-      img.addEventListener('mousedown', (ev) => {
-        if (!naturalWidth || !naturalHeight) return;
-        const rect = img.getBoundingClientRect();
-        start = { x: ev.clientX - rect.left, y: ev.clientY - rect.top, rect };
-        overlay.style.display = 'block';
-        overlay.style.left = `${start.x}px`;
-        overlay.style.top = `${start.y}px`;
-        overlay.style.width = '1px';
-        overlay.style.height = '1px';
-      });
-
-      img.addEventListener('mousemove', (ev) => {
-        if (!start) return;
-        const rect = start.rect;
-        const x = ev.clientX - rect.left;
-        const y = ev.clientY - rect.top;
-        const left = Math.min(start.x, x);
-        const top = Math.min(start.y, y);
-        const width = Math.abs(x - start.x);
-        const height = Math.abs(y - start.y);
-        overlay.style.left = `${left}px`;
-        overlay.style.top = `${top}px`;
-        overlay.style.width = `${width}px`;
-        overlay.style.height = `${height}px`;
-      });
-
-      img.addEventListener('mouseup', (ev) => {
-        if (!start) return;
-        const rect = start.rect;
-        const x = ev.clientX - rect.left;
-        const y = ev.clientY - rect.top;
-        const left = Math.min(start.x, x);
-        const top = Math.min(start.y, y);
-        const width = Math.abs(x - start.x);
-        const height = Math.abs(y - start.y);
-        start = null;
-
-        if (width < 10 || height < 10) {
-          clearCrop();
+      function startCropSelection() {
+        if (!naturalWidth || !naturalHeight) {
+          document.getElementById('status').textContent = 'Capture an image before cropping.';
           return;
         }
+        isSelectingCrop = true;
+        firstCropPoint = null;
+        document.getElementById('cropInfo').textContent = 'Click the top-left corner, then the bottom-right corner of your crop.';
+        const overlay = document.getElementById('crop-overlay');
+        overlay.style.display = 'none';
+      }
 
-        const scaleX = naturalWidth / img.clientWidth;
-        const scaleY = naturalHeight / img.clientHeight;
-        cropBox = {
-          left: Math.round(left * scaleX),
-          top: Math.round(top * scaleY),
-          right: Math.round((left + width) * scaleX),
-          bottom: Math.round((top + height) * scaleY)
-        };
-        document.getElementById('cropInfo').textContent = `Crop: (${cropBox.left}, ${cropBox.top}) → (${cropBox.right}, ${cropBox.bottom})`;
-      });
-    }
+      function setupCropping() {
+        const img = document.getElementById('captureImage');
+        const overlay = document.getElementById('crop-overlay');
+
+        img.addEventListener('load', () => {
+          naturalWidth = img.naturalWidth;
+          naturalHeight = img.naturalHeight;
+        });
+
+        img.addEventListener('click', (ev) => {
+          if (!isSelectingCrop) return;
+          const rect = img.getBoundingClientRect();
+          const point = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+
+          if (!firstCropPoint) {
+            firstCropPoint = point;
+            document.getElementById('cropInfo').textContent = 'First corner set. Click the bottom-right corner to finish.';
+            overlay.style.display = 'block';
+            overlay.style.left = `${point.x}px`;
+            overlay.style.top = `${point.y}px`;
+            overlay.style.width = '2px';
+            overlay.style.height = '2px';
+            return;
+          }
+
+          const left = Math.min(firstCropPoint.x, point.x);
+          const top = Math.min(firstCropPoint.y, point.y);
+          const width = Math.abs(point.x - firstCropPoint.x);
+          const height = Math.abs(point.y - firstCropPoint.y);
+          firstCropPoint = null;
+          isSelectingCrop = false;
+
+          if (width < 10 || height < 10) {
+            clearCrop();
+            return;
+          }
+
+          overlay.style.display = 'block';
+          overlay.style.left = `${left}px`;
+          overlay.style.top = `${top}px`;
+          overlay.style.width = `${width}px`;
+          overlay.style.height = `${height}px`;
+
+          const scaleX = naturalWidth / img.clientWidth;
+          const scaleY = naturalHeight / img.clientHeight;
+          cropBox = {
+            left: Math.round(left * scaleX),
+            top: Math.round(top * scaleY),
+            right: Math.round((left + width) * scaleX),
+            bottom: Math.round((top + height) * scaleY)
+          };
+          document.getElementById('cropInfo').textContent = `Crop: (${cropBox.left}, ${cropBox.top}) → (${cropBox.right}, ${cropBox.bottom})`;
+        });
+      }
+
+      async function goFullscreen() {
+        const root = document.documentElement;
+        if (!document.fullscreenElement) {
+          await root.requestFullscreen().catch(() => {});
+        } else {
+          await document.exitFullscreen().catch(() => {});
+        }
+      }
+
+      function enforceLandscape() {
+        if (window.matchMedia('(max-width: 900px)').matches && 'orientation' in screen && screen.orientation.lock) {
+          screen.orientation.lock('landscape').catch(() => {});
+        }
+
+        const portrait = window.matchMedia('(orientation: portrait)').matches;
+        document.body.classList.toggle('portrait-warning', portrait);
+      }
 
     document.getElementById('refreshBtn').addEventListener('click', refreshWindows);
-    document.getElementById('captureBtn').addEventListener('click', capture);
-    document.getElementById('ocrBtn').addEventListener('click', runOcr);
-    document.getElementById('saveSettingsBtn').addEventListener('click', saveSettings);
-    document.getElementById('clearCropBtn').addEventListener('click', clearCrop);
+      document.getElementById('captureBtn').addEventListener('click', capture);
+      document.getElementById('ocrBtn').addEventListener('click', runOcr);
+      document.getElementById('saveSettingsBtn').addEventListener('click', saveSettings);
+      document.getElementById('clearCropBtn').addEventListener('click', clearCrop);
+      document.getElementById('startCropBtn').addEventListener('click', startCropSelection);
+      document.getElementById('fullscreenBtn').addEventListener('click', goFullscreen);
+      window.addEventListener('orientationchange', enforceLandscape);
+      window.addEventListener('resize', enforceLandscape);
 
-    setupCropping();
-    refreshWindows();
-    clearCrop();
-  </script>
-</body>
+      setupCropping();
+      refreshWindows();
+      clearCrop();
+      enforceLandscape();
+    </script>
+  </body>
 </html>
 """
 
