@@ -118,6 +118,7 @@ if not exist "%PYTHON_HOME%\python.exe" (
 )
 set "PYTHON_CMD=%PYTHON_HOME%\python.exe"
 echo Installed Python to %PYTHON_CMD%
+call :ensure_pip || exit /b 1
 %PYTHON_CMD% -m pip config set global.no-cache-dir true >nul 2>nul
 exit /b 0
 
@@ -158,14 +159,44 @@ exit /b 0
 call :ensure_local_python
 exit /b %errorlevel%
 
+:ensure_pip
+"%PYTHON_CMD%" -m pip --version >nul 2>nul
+if not errorlevel 1 exit /b 0
+
+echo Installing pip...
+set "GET_PIP=%TEMP%\get-pip.py"
+powershell -NoLogo -NoProfile -Command "Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%GET_PIP%'" >nul
+if errorlevel 1 (
+    echo Failed to download get-pip.py.
+    exit /b 1
+)
+"%PYTHON_CMD%" "%GET_PIP%"
+set "GET_PIP_ERROR=%errorlevel%"
+del "%GET_PIP%" >nul 2>nul
+if %GET_PIP_ERROR% neq 0 (
+    echo Failed to install pip.
+    exit /b 1
+)
+exit /b 0
+
 :setup_venv
 call :ensure_python_available || exit /b 1
 if not exist "%VENV_PATH%\Scripts\activate.bat" (
     echo Creating virtual environment at "%VENV_PATH%"...
     "%PYTHON_CMD%" -m venv "%VENV_PATH%"
     if errorlevel 1 (
-        echo Failed to create virtual environment.
-        exit /b 1
+        echo Failed to create virtual environment with built-in venv. Trying virtualenv package...
+        call :ensure_pip || exit /b 1
+        "%PYTHON_CMD%" -m pip install --upgrade pip virtualenv
+        if errorlevel 1 (
+            echo Failed to install virtualenv.
+            exit /b 1
+        )
+        "%PYTHON_CMD%" -m virtualenv "%VENV_PATH%"
+        if errorlevel 1 (
+            echo Failed to create virtual environment using virtualenv.
+            exit /b 1
+        )
     )
 ) else (
     echo Virtual environment already present at "%VENV_PATH%".
