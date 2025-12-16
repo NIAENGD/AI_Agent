@@ -287,16 +287,36 @@ if defined USE_VENV (
         "%PYTHON_CMD%" -m venv "%VENV_DIR%" >nul 2>nul
     )
     set "APP_PY=%VENV_PY%"
-) else (
-    set "APP_PY=%PYTHON_CMD%"
-)
+    ) else (
+        set "APP_PY=%PYTHON_CMD%"
+    )
 
-"%APP_PY%" -m pip install --upgrade pip >nul 2>nul
-if exist "%REQ_FILE%" (
-    echo Installing Python dependencies...
-    "%APP_PY%" -m pip install --upgrade -r "%REQ_FILE%"
+    call :ensure_pip "%APP_PY%" || exit /b 1
+    "%APP_PY%" -m pip install --upgrade pip >nul 2>nul
+    if exist "%REQ_FILE%" (
+        echo Installing Python dependencies...
+        "%APP_PY%" -m pip install --upgrade -r "%REQ_FILE%"
+    )
+    exit /b %errorlevel%
+
+rem =============================================================
+:ensure_pip
+set "TARGET_PY=%~1"
+if not defined TARGET_PY exit /b 1
+"%TARGET_PY%" -m pip --version >nul 2>nul && exit /b 0
+echo Bootstrapping pip...
+"%TARGET_PY%" -m ensurepip --upgrade >nul 2>nul
+if not errorlevel 1 "%TARGET_PY%" -m pip --version >nul 2>nul && exit /b 0
+set "GETPIP_SCRIPT=%TEMP%\get-pip.py"
+powershell -NoLogo -NoProfile -Command "try { $ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%GETPIP_SCRIPT%' } catch { exit 1 }" >nul
+if errorlevel 1 (
+    echo Failed to download get-pip.py.
+    exit /b 1
 )
-exit /b %errorlevel%
+"%TARGET_PY%" "%GETPIP_SCRIPT%" >nul 2>nul
+set "PIP_RC=%errorlevel%"
+if exist "%GETPIP_SCRIPT%" del "%GETPIP_SCRIPT%" >nul 2>nul
+exit /b %PIP_RC%
 
 rem =============================================================
 :launch_app
