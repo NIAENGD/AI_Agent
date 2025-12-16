@@ -72,7 +72,12 @@ class SettingsDialog(wx.Dialog):
     The dialog is DPI-safe, resizable, and scrollable.
     """
 
-    def __init__(self, parent: wx.Window, tesseract_path: Optional[str]):
+    def __init__(
+        self,
+        parent: wx.Window,
+        tesseract_path: Optional[str],
+        fullscreen_enabled: bool,
+    ):
         super().__init__(parent, title="Settings", style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
 
         # Scrolled content region for settings fields.
@@ -83,6 +88,9 @@ class SettingsDialog(wx.Dialog):
         self._path_ctrl = wx.TextCtrl(scroller, value=tesseract_path or "")
         browse_btn = wx.Button(scroller, label="Browse…")
         browse_btn.Bind(wx.EVT_BUTTON, self._browse)
+
+        self._fullscreen_checkbox = wx.CheckBox(scroller, label="Enable full screen (F11)")
+        self._fullscreen_checkbox.SetValue(fullscreen_enabled)
 
         form_sizer = wx.FlexGridSizer(rows=1, cols=2, vgap=10, hgap=10)
         form_sizer.AddGrowableCol(1, 1)
@@ -95,6 +103,7 @@ class SettingsDialog(wx.Dialog):
 
         content_sizer = wx.BoxSizer(wx.VERTICAL)
         content_sizer.Add(form_sizer, 0, wx.EXPAND | wx.ALL, 12)
+        content_sizer.Add(self._fullscreen_checkbox, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 12)
         content_sizer.Add(browse_row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
 
         scroller.SetSizer(content_sizer)
@@ -130,6 +139,10 @@ class SettingsDialog(wx.Dialog):
     def tesseract_path(self) -> Optional[str]:
         text = self._path_ctrl.GetValue().strip()
         return text or None
+
+    @property
+    def fullscreen_enabled(self) -> bool:
+        return self._fullscreen_checkbox.GetValue()
 
 
 class WindowSelectionDialog(wx.Dialog):
@@ -454,10 +467,19 @@ class OCRFrame(wx.Frame):
         self._install_attempted = False
 
         self._crop_box: Optional[Tuple[int, int, int, int]] = None
+        self._is_fullscreen: bool = False
+        self._button_base_size = self.FromDIP((170, 64))
+        self._button_base_font = None  # Will be captured once buttons are created.
+        self._action_buttons: List[wx.Button] = []
+        self._header_base_font: Optional[wx.Font] = None
+        self._selected_label_base_font: Optional[wx.Font] = None
 
         self._build_ui()
         self._apply_tesseract_path()
         self._check_dependencies()
+
+        # Keyboard shortcuts for full screen.
+        self.Bind(wx.EVT_CHAR_HOOK, self._on_key_press)
 
         self.Bind(wx.EVT_CLOSE, self._on_close)
 
@@ -478,6 +500,8 @@ class OCRFrame(wx.Frame):
 
         self._selected_label = wx.StaticText(info_panel, label="Selected window: (none)")
         self._selected_label.SetForegroundColour(wx.Colour(80, 80, 80))
+        self._header_base_font = self._header.GetFont()
+        self._selected_label_base_font = self._selected_label.GetFont()
 
         info_sizer = wx.BoxSizer(wx.VERTICAL)
         info_sizer.Add(self._header, 0, wx.EXPAND | wx.BOTTOM, self.FromDIP(6))
@@ -530,6 +554,9 @@ class OCRFrame(wx.Frame):
         self._settings_btn.Bind(wx.EVT_BUTTON, self._open_settings)
 
         for btn in (self._start_btn, self._take_btn, self._crop_btn, self._process_btn, self._settings_btn):
+            self._action_buttons.append(btn)
+            if self._button_base_font is None:
+                self._button_base_font = btn.GetFont()
             controls_sizer.Add(btn, 0, wx.ALL, self.FromDIP(6))
 
         controls_panel.SetSizer(controls_sizer)
@@ -540,6 +567,8 @@ class OCRFrame(wx.Frame):
         main.Add(controls_panel, 0, wx.EXPAND | wx.ALL, self.FromDIP(12))
 
         self.SetSizer(main)
+
+        self._apply_touch_scaling(self._is_fullscreen)
 
         # Dynamic wrap for header on resize.
         self.Bind(wx.EVT_SIZE, self._on_frame_size)
@@ -553,15 +582,62 @@ class OCRFrame(wx.Frame):
             pass
         event.Skip()
 
+    def _on_key_press(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() == wx.WXK_F11:
+            self._toggle_fullscreen()
+            return
+        event.Skip()
+
     def _make_action_button(self, parent: wx.Window, label: str) -> wx.Button:
         btn = wx.Button(parent, label=label)
-        btn.SetMinSize(self.FromDIP((170, 64)))
-
         font = btn.GetFont()
         font.SetPointSize(max(font.GetPointSize(), 11))
         font.SetWeight(wx.FONTWEIGHT_SEMIBOLD)
         btn.SetFont(font)
+        btn.SetMinSize(self._scaled_button_size())
         return btn
+
+    def _scaled_button_size(self) -> wx.Size:
+        factor = 1.3 if self._is_fullscreen else 1.0
+        return wx.Size(int(self._button_base_size.width * factor), int(self._button_base_size.height * factor))
+
+    def _apply_touch_scaling(self, fullscreen: bool) -> None:
+        if not self._action_buttons:
+            return
+
+        factor = 1.3 if fullscreen else 1.0
+        font_factor = 1.2 if fullscreen else 1.0
+
+        for btn in self._action_buttons:
+            btn.SetMinSize(wx.Size(int(self._button_base_size.width * factor), int(self._button_base_size.height * factor)))
+            font = (self._button_base_font or btn.GetFont()).Bold()
+            base_size = self._button_base_font.GetPointSize() if self._button_base_font else font.GetPointSize()
+            font.SetPointSize(int(round(base_size * font_factor)))
+            btn.SetFont(font)
+
+        # Slightly bump header and label text for readability in full screen.
+        for label in (self._header, self._selected_label):
+            font = label.GetFont()
+            if label is self._header and self._header_base_font:
+                base_size = self._header_base_font.GetPointSize()
+            elif label is self._selected_label and self._selected_label_base_font:
+                base_size = self._selected_label_base_font.GetPointSize()
+            else:
+                base_size = font.GetPointSize()
+            font.SetPointSize(int(round(base_size * font_factor)))
+            label.SetFont(font)
+        self.Layout()
+
+    def _toggle_fullscreen(self, target_state: Optional[bool] = None) -> None:
+        desired = (not self._is_fullscreen) if target_state is None else target_state
+        if desired == self._is_fullscreen:
+            return
+
+        self._is_fullscreen = desired
+        self.ShowFullScreen(desired, style=wx.FULLSCREEN_ALL)
+        self._apply_touch_scaling(desired)
+        message = "Full screen enabled. Press F11 or use Settings to exit." if desired else "Exited full screen."
+        self._set_status(message)
 
     def _set_status(self, message: str) -> None:
         self.SetStatusText(message)
@@ -718,11 +794,15 @@ class OCRFrame(wx.Frame):
     # ---------- Actions ----------
 
     def _open_settings(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
-        dialog = SettingsDialog(self, self._tesseract_path)
+        dialog = SettingsDialog(self, self._tesseract_path, self._is_fullscreen)
         if dialog.ShowModal() == wx.ID_OK:
             self._tesseract_path = dialog.tesseract_path
             self._apply_tesseract_path()
-            self._set_status("Settings saved.")
+            status_msg = "Settings saved."
+            if dialog.fullscreen_enabled != self._is_fullscreen:
+                self._toggle_fullscreen(dialog.fullscreen_enabled)
+                status_msg = "Settings saved. Full screen enabled." if dialog.fullscreen_enabled else "Settings saved. Full screen disabled."
+            self._set_status(status_msg)
         dialog.Destroy()
 
     def _select_window(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
