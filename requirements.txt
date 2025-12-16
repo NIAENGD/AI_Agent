@@ -1,4 +1,4 @@
-PyQt5==5.15.11
+wxPython==4.2.1
 pygetwindow==0.0.9
 pyautogui==0.9.54
 pytesseract==0.3.10

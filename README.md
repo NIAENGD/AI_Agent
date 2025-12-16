@@ -1,6 +1,6 @@
 # AI Agent Phase 2
 
-A Windows-focused desktop utility that lets a user pick any open window, take a screenshot, and process it locally with OCR. The GUI is built with PyQt5 and relies on local tools only. This phase ships with a single Windows PowerShell launcher, `agent.ps1`, that installs everything in-place, keeps itself updated, and always starts the latest version of the app.
+A Windows-focused desktop utility that lets a user pick any open window, take a screenshot, and process it locally with OCR. The GUI is built with wxPython and relies on local tools only. This phase ships with a single Windows PowerShell launcher, `agent.ps1`, that installs everything in-place, keeps itself updated, and always starts the latest version of the app.
 
 ## Features
 - **Start/Settings hub**: initial view with Start (window selection) and Settings (Tesseract path) buttons.
@@ -47,6 +47,6 @@ python app/main.py
 4. Use **Settings** to set the `tesseract.exe` path if it is not on `PATH`.
 
 ## Notes
-- On startup the app now performs a dependency check (PyQt5, pygetwindow, pyautogui, Pillow, pytesseract) and shows a single actionable message if anything is missing—run `pip install -r requirements.txt` to resolve them.
+- On startup the app now performs a dependency check (wxPython, pygetwindow, pyautogui, Pillow, pytesseract) and shows a single actionable message if anything is missing—run `pip install -r requirements.txt` to resolve them.
 - Screen capture relies on `pyautogui`; ensure the selected window is not minimized.
 - OCR accuracy depends on your Tesseract installation and language packs.
