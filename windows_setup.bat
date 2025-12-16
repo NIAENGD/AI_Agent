@@ -22,6 +22,7 @@ pushd "%PROJECT_ROOT%"
 set "PY_VERSION=3.11.9"
 set "PY_INSTALLER_URL=https://www.python.org/ftp/python/%PY_VERSION%/python-%PY_VERSION%-amd64.exe"
 set "PYTHON_HOME=%PROJECT_ROOT%\.python"
+set "PY_EMBED_ZIP_URL=https://www.python.org/ftp/python/%PY_VERSION%/python-%PY_VERSION%-embed-amd64.zip"
 set "VENV_DIR=.venv"
 set "VENV_PATH=%PROJECT_ROOT%\%VENV_DIR%"
 set "VENV_PYTHON=%VENV_PATH%\Scripts\python.exe"
@@ -112,12 +113,45 @@ if errorlevel 1 (
 
 del "%PY_INSTALLER%" >nul 2>nul
 if not exist "%PYTHON_HOME%\python.exe" (
-    echo Python installer completed but python.exe was not found.
-    exit /b 1
+    echo Python installer completed but python.exe was not found. Attempting embeddable runtime...
+    call :install_embeddable_python || exit /b 1
 )
 set "PYTHON_CMD=%PYTHON_HOME%\python.exe"
 echo Installed Python to %PYTHON_CMD%
 %PYTHON_CMD% -m pip config set global.no-cache-dir true >nul 2>nul
+exit /b 0
+
+:install_embeddable_python
+echo Downloading embeddable Python %PY_VERSION% ...
+set "PY_EMBED_ZIP=%TEMP%\python-%PY_VERSION%-embed-amd64.zip"
+powershell -NoLogo -NoProfile -Command "Invoke-WebRequest -Uri '%PY_EMBED_ZIP_URL%' -OutFile '%PY_EMBED_ZIP%'" >nul
+if errorlevel 1 (
+    echo Failed to download embeddable Python package.
+    exit /b 1
+)
+
+if not exist "%PYTHON_HOME%" mkdir "%PYTHON_HOME%" >nul 2>nul
+echo Extracting embeddable runtime to %PYTHON_HOME% ...
+powershell -NoLogo -NoProfile -Command "Expand-Archive -Path '%PY_EMBED_ZIP%' -DestinationPath '%PYTHON_HOME%' -Force" >nul
+if errorlevel 1 (
+    echo Failed to extract embeddable Python runtime.
+    del "%PY_EMBED_ZIP%" >nul 2>nul
+    exit /b 1
+)
+del "%PY_EMBED_ZIP%" >nul 2>nul
+
+if not exist "%PYTHON_HOME%\python.exe" (
+    echo Embeddable runtime did not provide python.exe.
+    exit /b 1
+)
+
+rem Ensure the embeddable runtime can import stdlib by uncommenting zip import line
+for /f "usebackq delims=" %%l in (`findstr /n /r /c:"^#\?import site$" "%PYTHON_HOME%\python311._pth" 2^>nul`) do (
+    set "LINE=%%l"
+    for /f "tokens=1 delims=:" %%n in ("%%l") do set "LINENO=%%n"
+)
+if defined LINENO powershell -NoLogo -NoProfile -Command "(Get-Content -Path '%PYTHON_HOME%\python311._pth') | ForEach-Object { if((\$global:i++) -eq (%LINENO%-1)){ if($_ -like '#import site'){ 'import site' } else { $_ } } else { $_ } } | Set-Content -Path '%PYTHON_HOME%\python311._pth'"
+
 exit /b 0
 
 :ensure_python_available
