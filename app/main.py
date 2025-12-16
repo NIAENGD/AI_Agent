@@ -34,10 +34,10 @@ except Exception:  # pragma: no cover - optional dependency
 
 try:  # type: ignore
     from PIL import Image
-    from PIL.ImageQt import ImageQt as PilImageQt
+    from PIL.ImageQt import ImageQt
 except Exception:  # pragma: no cover - optional dependency
     Image = None
-    PilImageQt = None
+    ImageQt = None
 
 
 @dataclass
@@ -249,7 +249,7 @@ class OCRApp(QtWidgets.QWidget):
         return {
             "pygetwindow": gw is not None,
             "pyautogui": pyautogui is not None,
-            "pillow": Image is not None and PilImageQt is not None,
+            "pillow": Image is not None and ImageQt is not None,
             "pytesseract": pytesseract is not None,
         }
 
@@ -337,7 +337,7 @@ class OCRApp(QtWidgets.QWidget):
         return True
 
     def _refresh_optional_dependencies(self) -> None:
-        global gw, pyautogui, pytesseract, Image, PilImageQt
+        global gw, pyautogui, pytesseract, Image, ImageQt
 
         if gw is None:
             try:
@@ -354,15 +354,15 @@ class OCRApp(QtWidgets.QWidget):
                 pytesseract = importlib.import_module("pytesseract")
             except Exception:  # pragma: no cover - optional dependency
                 pytesseract = None
-        if Image is None or PilImageQt is None:
+        if Image is None or ImageQt is None:
             try:
                 from PIL import Image as PilImage
-                from PIL.ImageQt import ImageQt as PilImageQtImported
+                from PIL.ImageQt import ImageQt as ImageQtImported
                 Image = PilImage
-                PilImageQt = PilImageQtImported
+                ImageQt = ImageQtImported
             except Exception:  # pragma: no cover - optional dependency
                 Image = None
-                PilImageQt = None
+                ImageQt = None
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self._tesseract_path, self)
@@ -398,7 +398,7 @@ class OCRApp(QtWidgets.QWidget):
             return
 
         self._captured_image = screenshot
-        qimage = PilImageQt(screenshot)
+        qimage = ImageQt(screenshot)
         pixmap = QtGui.QPixmap.fromImage(qimage)
         self._preview.update_image(pixmap)
         self._process_btn.setEnabled(True)
