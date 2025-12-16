@@ -49,9 +49,13 @@ call :print_banner
 call :ensure_directories || goto :fail
 call :sync_source || goto :fail
 if defined NEED_RESTART (
-call :restart_if_needed
-endlocal
-exit /b 0
+    if defined AGENT_RELAUNCHED (
+        set "NEED_RESTART="
+    ) else (
+        call :restart_if_needed
+        endlocal
+        exit /b 0
+    )
 )
 call :bootstrap_python || goto :fail
 call :bootstrap_dependencies || goto :fail
