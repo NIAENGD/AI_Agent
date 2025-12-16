@@ -8,6 +8,7 @@ be reached over the network.
 """
 from __future__ import annotations
 
+import base64
 import io
 import importlib
 import importlib.util
@@ -104,6 +105,11 @@ class AppState:
 state = AppState()
 app = Flask(__name__)
 
+CONFIG_DIR = Path(__file__).resolve().parent / "configs"
+CONFIG_FILE = CONFIG_DIR / "prompts.txt"
+API_KEY_FILE = CONFIG_DIR / "api_key.txt"
+DEFAULT_PROMPT = {"title": "Example", "prompt": "This is an example prompt"}
+
 
 # ---------- Dependency handling ----------
 
@@ -195,6 +201,102 @@ def _refresh_optional_dependencies() -> None:
             Image = PilImage
         except Exception:  # pragma: no cover
             Image = None
+
+
+# ---------- Prompt configuration ----------
+
+
+def _ensure_prompt_store() -> None:
+    _ensure_config_dir()
+    if not CONFIG_FILE.exists():
+        _write_prompt_entries([DEFAULT_PROMPT])
+
+
+def _write_prompt_entries(entries: List[Dict[str, str]]) -> None:
+    lines = [f"{entry['title']};{entry['prompt']};" for entry in entries]
+    CONFIG_FILE.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _ensure_config_dir() -> None:
+    CONFIG_DIR.mkdir(exist_ok=True)
+
+
+def _load_api_key() -> Optional[str]:
+    env_key = os.environ.get("OPENAI_API_KEY")
+    if env_key and env_key.strip():
+        return env_key.strip()
+
+    if API_KEY_FILE.exists():
+        key = API_KEY_FILE.read_text(encoding="utf-8").strip()
+        if key:
+            return key
+    return None
+
+
+def _save_api_key(raw_key: str) -> bool:
+    _ensure_config_dir()
+    key = (raw_key or "").strip()
+    if not key:
+        if API_KEY_FILE.exists():
+            API_KEY_FILE.unlink()
+        return False
+
+    API_KEY_FILE.write_text(key, encoding="utf-8")
+    return True
+
+
+def _parse_prompt_lines(raw: str) -> List[Dict[str, str]]:
+    prompts: List[Dict[str, str]] = []
+    for line in raw.splitlines():
+        parts = [segment.strip() for segment in line.split(";") if segment.strip()]
+        if len(parts) >= 2:
+            prompts.append({"title": parts[0], "prompt": parts[1]})
+    return prompts
+
+
+def _load_prompt_entries() -> List[Dict[str, str]]:
+    _ensure_prompt_store()
+    try:
+        raw = CONFIG_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        _write_prompt_entries([DEFAULT_PROMPT])
+        return [DEFAULT_PROMPT]
+
+    prompts = _parse_prompt_lines(raw)
+    if not prompts:
+        prompts = [DEFAULT_PROMPT]
+        _write_prompt_entries(prompts)
+    return prompts
+
+
+def _append_prompt_entry(title: str, prompt: str) -> List[Dict[str, str]]:
+    prompts = _load_prompt_entries()
+    prompts.append({"title": title, "prompt": prompt})
+    _write_prompt_entries(prompts)
+    return prompts
+
+
+def _image_to_data_url(image: "Image.Image") -> str:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+    encoded = base64.b64encode(buffer.read()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def _get_openai_client():  # type: ignore[return-type]
+    if importlib.util.find_spec("openai") is None:
+        return None, "OpenAI SDK is not installed. Please add it to requirements.txt."
+
+    from openai import OpenAI
+
+    api_key = _load_api_key()
+    if not api_key:
+        return None, (
+            "Set OPENAI_API_KEY or save a key in configs/api_key.txt via Settings."
+        )
+
+    return OpenAI(api_key=api_key), None
 
 
 # ---------- Window helpers ----------
@@ -340,13 +442,39 @@ def api_windows() -> tuple[str, int]:
     return jsonify({"windows": [w.title for w in windows]})
 
 
-@app.route("/api/settings", methods=["POST"])
+@app.route("/api/settings", methods=["GET", "POST"])
 def api_settings() -> tuple[str, int]:
+    if request.method == "GET":
+        if state.tesseract_path is None:
+            state.tesseract_path = _detect_local_tesseract()
+            _apply_tesseract_path()
+
+        return jsonify(
+            {
+                "tesseract_path": state.tesseract_path,
+                "api_key_present": _load_api_key() is not None,
+                "api_key_path": str(API_KEY_FILE),
+            }
+        )
+
     data = request.get_json(silent=True) or {}
     path = data.get("tesseract_path")
     state.tesseract_path = path or _detect_local_tesseract()
     _apply_tesseract_path()
-    return jsonify({"message": "Settings saved.", "tesseract_path": state.tesseract_path})
+
+    api_key_present = None
+    if "api_key" in data:
+        api_key_present = _save_api_key(str(data.get("api_key", "")))
+
+    return jsonify(
+        {
+            "message": "Settings saved.",
+            "tesseract_path": state.tesseract_path,
+            "api_key_present": api_key_present
+            if api_key_present is not None
+            else _load_api_key() is not None,
+        }
+    )
 
 
 @app.route("/api/capture", methods=["POST"])
@@ -402,10 +530,98 @@ def api_ocr() -> tuple[str, int]:
 
     try:
         text = _run_ocr(image_for_ocr)
+        data_url = _image_to_data_url(image_for_ocr)
     except Exception as exc:  # pragma: no cover - user environment specific
         return jsonify({"error": str(exc)}), 500
 
-    return jsonify({"text": text})
+    return jsonify({"text": text, "image_data_url": data_url})
+
+
+@app.route("/api/configs", methods=["GET", "POST"])
+def api_configs() -> tuple[str, int]:
+    if request.method == "GET":
+        return jsonify({"prompts": _load_prompt_entries()})
+
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    prompt = (data.get("prompt") or "").strip()
+    if not title or not prompt:
+        return jsonify({"error": "Title and prompt are required."}), 400
+
+    prompts = _append_prompt_entry(title, prompt)
+    return jsonify({"prompts": prompts, "message": "Prompt saved."})
+
+
+@app.route("/api/configs/upload", methods=["POST"])
+def api_configs_upload() -> tuple[str, int]:
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded."}), 400
+
+    uploaded = request.files["file"]
+    try:
+        content = uploaded.read().decode("utf-8")
+    except Exception:
+        return jsonify({"error": "Unable to read the uploaded file as text."}), 400
+
+    new_prompts = _parse_prompt_lines(content)
+    if not new_prompts:
+        return jsonify({"error": "No valid prompts found in the file."}), 400
+
+    prompts = _load_prompt_entries() + new_prompts
+    _write_prompt_entries(prompts)
+    return jsonify({"prompts": prompts, "message": "Prompts uploaded."})
+
+
+@app.route("/api/ai_response", methods=["POST"])
+def api_ai_response() -> tuple[str, int]:
+    data = request.get_json(silent=True) or {}
+    queue = data.get("queue") or []
+    include_images = bool(data.get("include_images", True))
+    prompt_text = (data.get("prompt") or "").strip()
+
+    if not isinstance(queue, list):
+        return jsonify({"error": "Queue must be a list."}), 400
+    if len(queue) > 10:
+        return jsonify({"error": "Queue limit is 10 items per request."}), 400
+
+    texts: List[str] = []
+    for item in queue:
+        text = str(item.get("text", "")).strip()
+        if text:
+            texts.append(text)
+
+    combined_text = "\n\n".join(texts)
+    if prompt_text and combined_text:
+        combined_prompt = f"{prompt_text}\n\n{combined_text}"
+    else:
+        combined_prompt = prompt_text or combined_text
+
+    if not combined_prompt:
+        combined_prompt = "Please review the provided OCR text and images."
+
+    content: List[Dict[str, str]] = [{"type": "input_text", "text": combined_prompt}]
+
+    if include_images:
+        for item in queue:
+            image_data = item.get("image")
+            if image_data:
+                content.append({"type": "input_image", "image_url": image_data})
+
+    client, error = _get_openai_client()
+    if error:
+        return jsonify({"error": error}), 400
+
+    model = os.environ.get("AI_AGENT_MODEL", "gpt-4.1-mini")
+
+    try:
+        response = client.responses.create(
+            model=model,
+            input=[{"role": "user", "content": content}],
+        )
+    except Exception as exc:  # pragma: no cover - network/env specific
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify({"response": getattr(response, "output_text", "") or ""})
 
 
 @app.route("/image")
@@ -443,26 +659,41 @@ _PAGE_TEMPLATE = """
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
   <title>AI Agent - Web Capture & OCR</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: #f5f5f5; color: #222; }
-    header { background: #0a84ff; color: white; padding: 16px 24px; }
+    :root {
+      --bg: #f2f2f2;
+      --panel: #ffffff;
+      --border: #cfcfcf;
+      --text: #1f1f1f;
+      --muted: #6b6b6b;
+      --accent: #3d3d3d;
+      --accent-strong: #2b2b2b;
+      --highlight: #ececec;
+    }
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+    header { background: var(--accent-strong); color: #f5f5f5; padding: 16px 24px; }
     main { padding: 20px; max-width: 1200px; margin: 0 auto; }
-    section { background: white; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
+    section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
     h1 { margin: 0 0 6px; }
-    h2 { margin-top: 0; }
-    button { background: #0a84ff; color: white; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; }
-    button.secondary { background: #555; }
-    button:disabled { background: #b0c9ff; cursor: not-allowed; }
-    label { display: block; margin-bottom: 6px; font-weight: bold; }
-    input, select, textarea { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box; font-size: 14px; }
+    h2 { margin-top: 0; color: var(--accent-strong); }
+    button { background: var(--accent); color: #f5f5f5; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+    button.secondary { background: var(--muted); color: #f5f5f5; }
+    button:disabled { background: #b5b5b5; cursor: not-allowed; }
+    label { display: block; margin-bottom: 6px; font-weight: bold; color: var(--accent-strong); }
+    input, select, textarea { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); box-sizing: border-box; font-size: 14px; background: #fdfdfd; color: var(--text); }
+    textarea { min-height: 90px; }
     .row { display: flex; gap: 16px; flex-wrap: wrap; }
     .col { flex: 1 1 300px; }
-    #status { margin-top: 8px; color: #0a84ff; font-weight: bold; }
+    #status { margin-top: 8px; color: var(--accent-strong); font-weight: bold; }
     #preview-container { position: relative; display: inline-block; }
-    #crop-overlay { position: absolute; border: 2px dashed #ff5c00; background: rgba(255, 92, 0, 0.2); display: none; pointer-events: none; }
-    #captureImage { max-width: 100%; border-radius: 8px; border: 1px solid #ddd; }
-    pre { background: #f0f0f0; padding: 12px; border-radius: 8px; white-space: pre-wrap; }
-    #orientationNotice { display: none; margin-top: 10px; background: #ff5c00; color: white; padding: 8px 12px; border-radius: 8px; }
+    #crop-overlay { position: absolute; border: 2px dashed #707070; background: rgba(112, 112, 112, 0.2); display: none; pointer-events: none; }
+    #captureImage { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
+    pre { background: var(--highlight); padding: 12px; border-radius: 8px; white-space: pre-wrap; border: 1px solid var(--border); }
+    #orientationNotice { display: none; margin-top: 10px; background: #5a5a5a; color: #f5f5f5; padding: 8px 12px; border-radius: 8px; }
     body.portrait-warning #orientationNotice { display: block; }
+    .queue-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+    .queue-item { border: 1px solid var(--border); padding: 8px; border-radius: 8px; background: var(--highlight); }
+    .queue-item-title { font-weight: bold; color: var(--accent-strong); margin-bottom: 4px; }
+    .stack { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   </style>
 </head>
 <body>
@@ -491,9 +722,13 @@ _PAGE_TEMPLATE = """
           </div>
         </div>
         <div class=\"col\">
-          <h2>OCR settings</h2>
+          <h2>App settings</h2>
           <label for=\"tesseractPath\">Tesseract executable</label>
           <input id=\"tesseractPath\" type=\"text\" placeholder=\"Path to tesseract.exe\" value=\"{{ tesseract_path }}\" />
+          <label for=\"apiKey\" style=\"margin-top:8px;\">OpenAI API key</label>
+          <input id=\"apiKey\" type=\"password\" placeholder=\"sk-...\" autocomplete=\"off\" />
+          <div id=\"apiKeyStatus\" style=\"margin-top:6px; color: var(--muted); font-size: 13px;\">No API key saved.</div>
+          <div style=\"margin-top:4px; color: var(--muted); font-size: 13px;\">Stored in configs/api_key.txt. Leave blank to clear.</div>
           <div style=\"margin-top:8px;\">
             <button id=\"saveSettingsBtn\" type=\"button\">Save settings</button>
           </div>
@@ -527,6 +762,42 @@ _PAGE_TEMPLATE = """
     <section>
       <h2>OCR output</h2>
       <pre id=\"ocrOutput\"></pre>
+      <div class=\"stack\" style=\"margin-top:8px;\">
+        <button id=\"queueBtn\" type=\"button\">Save to queue</button>
+        <button id=\"clearQueueBtn\" type=\"button\" class=\"secondary\">Clear queue</button>
+      </div>
+      <div id=\"queueStatus\" style=\"color: var(--muted); margin-top:6px;\"></div>
+    </section>
+
+    <section>
+      <h2>Prompts &amp; AI response</h2>
+      <div class=\"row\">
+        <div class=\"col\">
+          <label for=\"promptSelect\">Saved prompts</label>
+          <select id=\"promptSelect\"></select>
+          <div class=\"stack\" style=\"margin-top:8px;\">
+            <input id=\"newPromptTitle\" type=\"text\" placeholder=\"New prompt title\" />
+            <button id=\"savePromptBtn\" type=\"button\">Save prompt</button>
+          </div>
+          <label for=\"promptText\" style=\"margin-top:8px;\">Prompt text</label>
+          <textarea id=\"promptText\" placeholder=\"Select a saved prompt or type your own\"></textarea>
+          <div class=\"stack\" style=\"margin-top:8px;\">
+            <input id=\"configFileInput\" type=\"file\" accept=\"text/plain\" />
+            <button id=\"uploadConfigBtn\" type=\"button\" class=\"secondary\">Upload .txt prompts</button>
+          </div>
+        </div>
+        <div class=\"col\">
+          <label>AI request</label>
+          <div class=\"stack\" style=\"margin-bottom:8px;\">
+            <label style=\"display:flex; align-items:center; gap:6px; font-weight: normal; color: var(--text);\"><input type=\"checkbox\" id=\"includeImages\" checked />Include images</label>
+            <span id=\"queueCount\" style=\"color: var(--muted);\"></span>
+          </div>
+          <ul class=\"queue-list\" id=\"queueList\"></ul>
+          <div class=\"stack\" style=\"margin-top:8px;\">
+            <button id=\"sendAiBtn\" type=\"button\">Generate response</button>
+          </div>
+        </div>
+      </div>
     </section>
   </main>
 
@@ -536,6 +807,11 @@ _PAGE_TEMPLATE = """
       let naturalHeight = 0;
       let isSelectingCrop = false;
       let firstCropPoint = null;
+      let lastOcrText = '';
+      let lastOcrImage = null;
+      let queueItems = [];
+      const maxQueueItems = 10;
+      let promptEntries = [];
 
     async function refreshWindows() {
       const res = await fetch('/api/windows');
@@ -557,16 +833,38 @@ _PAGE_TEMPLATE = """
       status.textContent = `Found ${data.windows.length} window(s).`;
     }
 
+    function updateApiKeyStatus(isPresent) {
+      const apiKeyStatus = document.getElementById('apiKeyStatus');
+      apiKeyStatus.textContent = isPresent ? 'API key saved.' : 'No API key saved.';
+    }
+
+    async function loadSettings() {
+      const status = document.getElementById('status');
+      const res = await fetch('/api/settings');
+      const data = await res.json();
+      if (!res.ok) {
+        status.textContent = data.error || 'Unable to load settings.';
+        return;
+      }
+
+      document.getElementById('tesseractPath').value = data.tesseract_path || '';
+      updateApiKeyStatus(!!data.api_key_present);
+    }
+
     async function saveSettings() {
       const path = document.getElementById('tesseractPath').value;
+      const apiKey = document.getElementById('apiKey').value;
       const res = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tesseract_path: path })
+        body: JSON.stringify({ tesseract_path: path, api_key: apiKey })
       });
       const data = await res.json();
       const status = document.getElementById('status');
       status.textContent = data.message || data.error || 'Settings updated';
+      if ('api_key_present' in data) {
+        updateApiKeyStatus(!!data.api_key_present);
+      }
     }
 
     async function capture() {
@@ -614,7 +912,10 @@ _PAGE_TEMPLATE = """
         return;
       }
       status.textContent = 'OCR complete.';
-      document.getElementById('ocrOutput').textContent = data.text || '';
+      lastOcrText = data.text || '';
+      lastOcrImage = data.image_data_url || null;
+      document.getElementById('ocrOutput').textContent = lastOcrText;
+      document.getElementById('queueStatus').textContent = '';
     }
 
       function clearCrop() {
@@ -711,6 +1012,160 @@ _PAGE_TEMPLATE = """
         document.body.classList.toggle('portrait-warning', portrait);
       }
 
+      function updateQueueUI() {
+        const list = document.getElementById('queueList');
+        list.innerHTML = '';
+        if (!queueItems.length) {
+          const empty = document.createElement('li');
+          empty.className = 'queue-item';
+          empty.textContent = 'Queue is empty. Save OCR results to build a request.';
+          list.appendChild(empty);
+        } else {
+          queueItems.forEach((item, idx) => {
+            const li = document.createElement('li');
+            li.className = 'queue-item';
+            const title = document.createElement('div');
+            title.className = 'queue-item-title';
+            title.textContent = `Item ${idx + 1}`;
+            const text = document.createElement('div');
+            text.textContent = item.text.slice(0, 140) + (item.text.length > 140 ? '…' : '');
+            li.appendChild(title);
+            li.appendChild(text);
+            list.appendChild(li);
+          });
+        }
+        document.getElementById('queueCount').textContent = `${queueItems.length}/${maxQueueItems} queued`;
+      }
+
+      function addToQueue() {
+        if (!lastOcrText) {
+          document.getElementById('queueStatus').textContent = 'Run OCR before adding to the queue.';
+          return;
+        }
+        if (queueItems.length >= maxQueueItems) {
+          document.getElementById('queueStatus').textContent = 'Queue is full (10 items max).';
+          return;
+        }
+        queueItems.push({ text: lastOcrText, image: lastOcrImage });
+        document.getElementById('queueStatus').textContent = 'Saved to queue. Capture and OCR the next image if needed.';
+        updateQueueUI();
+      }
+
+      function clearQueue() {
+        queueItems = [];
+        document.getElementById('queueStatus').textContent = 'Queue cleared.';
+        updateQueueUI();
+      }
+
+      async function loadPrompts() {
+        const select = document.getElementById('promptSelect');
+        const status = document.getElementById('status');
+        try {
+          const res = await fetch('/api/configs');
+          const data = await res.json();
+          if (!res.ok) {
+            status.textContent = data.error || 'Unable to load prompts.';
+            return;
+          }
+          promptEntries = data.prompts || [];
+          populatePromptSelect();
+        } catch (err) {
+          status.textContent = 'Unable to load prompts.';
+          select.innerHTML = '';
+        }
+      }
+
+      function populatePromptSelect() {
+        const select = document.getElementById('promptSelect');
+        select.innerHTML = '';
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = 'Choose a prompt';
+        select.appendChild(placeholder);
+
+        promptEntries.forEach(entry => {
+          const option = document.createElement('option');
+          option.value = entry.title;
+          option.textContent = entry.title;
+          select.appendChild(option);
+        });
+
+        if (promptEntries.length) {
+          select.value = promptEntries[0].title;
+          document.getElementById('promptText').value = promptEntries[0].prompt;
+        }
+      }
+
+      function onPromptChange() {
+        const select = document.getElementById('promptSelect');
+        const target = promptEntries.find(p => p.title === select.value);
+        document.getElementById('promptText').value = target ? target.prompt : '';
+      }
+
+      async function savePrompt() {
+        const title = document.getElementById('newPromptTitle').value.trim();
+        const prompt = document.getElementById('promptText').value.trim();
+        const status = document.getElementById('status');
+        if (!title || !prompt) {
+          status.textContent = 'Provide both a title and prompt text.';
+          return;
+        }
+        const res = await fetch('/api/configs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, prompt })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          status.textContent = data.error || 'Unable to save prompt.';
+          return;
+        }
+        status.textContent = data.message || 'Prompt saved.';
+        promptEntries = data.prompts || [];
+        document.getElementById('newPromptTitle').value = '';
+        populatePromptSelect();
+      }
+
+      async function uploadPromptFile() {
+        const input = document.getElementById('configFileInput');
+        const status = document.getElementById('status');
+        if (!input.files || !input.files.length) {
+          status.textContent = 'Choose a .txt file to upload prompts.';
+          return;
+        }
+        const form = new FormData();
+        form.append('file', input.files[0]);
+        const res = await fetch('/api/configs/upload', { method: 'POST', body: form });
+        const data = await res.json();
+        if (!res.ok) {
+          status.textContent = data.error || 'Unable to upload prompts.';
+          return;
+        }
+        status.textContent = data.message || 'Prompts uploaded.';
+        promptEntries = data.prompts || [];
+        populatePromptSelect();
+        input.value = '';
+      }
+
+      async function sendAiRequest() {
+        const status = document.getElementById('status');
+        const prompt = document.getElementById('promptText').value.trim();
+        const includeImages = document.getElementById('includeImages').checked;
+        status.textContent = 'Sending to AI…';
+        const res = await fetch('/api/ai_response', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, include_images: includeImages, queue: queueItems })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          status.textContent = data.error || 'AI request failed.';
+          return;
+        }
+        status.textContent = 'AI response ready.';
+        document.getElementById('ocrOutput').textContent = data.response || '';
+      }
+
     document.getElementById('refreshBtn').addEventListener('click', refreshWindows);
       document.getElementById('captureBtn').addEventListener('click', capture);
       document.getElementById('ocrBtn').addEventListener('click', runOcr);
@@ -718,12 +1173,21 @@ _PAGE_TEMPLATE = """
       document.getElementById('clearCropBtn').addEventListener('click', clearCrop);
       document.getElementById('startCropBtn').addEventListener('click', startCropSelection);
       document.getElementById('fullscreenBtn').addEventListener('click', goFullscreen);
+      document.getElementById('queueBtn').addEventListener('click', addToQueue);
+      document.getElementById('clearQueueBtn').addEventListener('click', clearQueue);
+      document.getElementById('promptSelect').addEventListener('change', onPromptChange);
+      document.getElementById('savePromptBtn').addEventListener('click', savePrompt);
+      document.getElementById('uploadConfigBtn').addEventListener('click', uploadPromptFile);
+      document.getElementById('sendAiBtn').addEventListener('click', sendAiRequest);
       window.addEventListener('orientationchange', enforceLandscape);
       window.addEventListener('resize', enforceLandscape);
 
       setupCropping();
+      loadSettings();
       refreshWindows();
       clearCrop();
+      loadPrompts();
+      updateQueueUI();
       enforceLandscape();
     </script>
   </body>
