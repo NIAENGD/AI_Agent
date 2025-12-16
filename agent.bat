@@ -83,13 +83,13 @@ call :get_local_sha
 set "LOCAL_SHA=%RETURN_VALUE%"
 
 if defined GIT_AVAILABLE if exist "%SRC_DIR%\.git" (
-call :git_update_repo
-goto :post_sync
+    call :git_update_repo
+    goto :post_sync
 )
 
 if defined GIT_AVAILABLE if not exist "%SRC_DIR%\.git" (
-call :git_clone_repo
-goto :post_sync
+    call :git_clone_repo
+    goto :post_sync
 )
 
 call :zip_sync_repo
@@ -117,11 +117,17 @@ exit /b 1
 echo Git pull failed, continuing with existing checkout.
 exit /b 0
 :git_clone_repo
+if exist "%SRC_DIR%" (
+    rem If the folder exists but is not a git checkout, clear it so clone can succeed cleanly.
+    if not exist "%SRC_DIR%\.git" (
+        call :wipe_existing_source || exit /b 1
+    )
+)
 echo Cloning repository into %SRC_DIR% ...
 git clone --branch %GIT_BRANCH% "%GIT_REMOTE%" "%SRC_DIR%"
 if errorlevel 1 (
-echo Clone failed. Falling back to zip download.
-call :zip_sync_repo
+    echo Clone failed. Falling back to zip download.
+    call :zip_sync_repo
 exit /b %errorlevel%
 )
 set "UPDATED=1"
@@ -161,7 +167,11 @@ if not defined UNPACKED_DIR (
 echo Extracted archive is empty.
 exit /b 1
 )
-if exist "%SRC_DIR%" rd /s /q "%SRC_DIR%" >nul 2>nul
+call :wipe_existing_source
+if errorlevel 1 (
+    echo Failed to clean existing source directory.
+    exit /b 1
+)
 xcopy "%UNPACKED_DIR%" "%SRC_DIR%" /E /I /Y >nul
 if errorlevel 1 (
 echo Failed to copy extracted files.
@@ -190,10 +200,16 @@ exit /b 0
 :get_local_sha
 set "RETURN_VALUE="
 if exist "%SRC_DIR%\.git" (
-for /f "delims=" %%h in ('git -C "%SRC_DIR%" rev-parse HEAD 2^>nul') do set "RETURN_VALUE=%%h"
+    for /f "delims=" %%h in ('git -C "%SRC_DIR%" rev-parse HEAD 2^>nul') do set "RETURN_VALUE=%%h"
 ) else if exist "%VERSION_FILE%" (
 set /p "RETURN_VALUE=" < "%VERSION_FILE%"
 )
+exit /b 0
+:wipe_existing_source
+rem Remove a stale source directory to avoid partial or conflicting checkouts.
+if not exist "%SRC_DIR%" exit /b 0
+rd /s /q "%SRC_DIR%" >nul 2>nul
+if exist "%SRC_DIR%" exit /b 1
 exit /b 0
 :refresh_self
 if not exist "%SRC_DIR%\agent.bat" exit /b 0
