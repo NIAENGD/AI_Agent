@@ -263,17 +263,30 @@ def _load_prompt_entries() -> List[Dict[str, str]]:
         return [DEFAULT_PROMPT]
 
     prompts = _parse_prompt_lines(raw)
-    if not prompts:
-        prompts = [DEFAULT_PROMPT]
-        _write_prompt_entries(prompts)
     return prompts
 
 
-def _append_prompt_entry(title: str, prompt: str) -> List[Dict[str, str]]:
+def _upsert_prompt_entry(title: str, prompt: str) -> List[Dict[str, str]]:
     prompts = _load_prompt_entries()
-    prompts.append({"title": title, "prompt": prompt})
+    replacement = {"title": title, "prompt": prompt}
+    for idx, entry in enumerate(prompts):
+        if entry["title"] == title:
+            prompts[idx] = replacement
+            break
+    else:
+        prompts.append(replacement)
     _write_prompt_entries(prompts)
     return prompts
+
+
+def _delete_prompt_entry(title: str) -> Tuple[List[Dict[str, str]], bool]:
+    prompts = _load_prompt_entries()
+    new_prompts = [entry for entry in prompts if entry["title"] != title]
+    if len(new_prompts) == len(prompts):
+        return prompts, False
+
+    _write_prompt_entries(new_prompts)
+    return new_prompts, True
 
 
 def _image_to_data_url(image: "Image.Image") -> str:
@@ -289,6 +302,10 @@ def _get_openai_client():  # type: ignore[return-type]
         return None, "OpenAI SDK is not installed. Please add it to requirements.txt."
 
     from openai import OpenAI
+    try:
+        import httpx  # type: ignore
+    except Exception:
+        httpx = None  # type: ignore
 
     api_key = _load_api_key()
     if not api_key:
@@ -296,7 +313,28 @@ def _get_openai_client():  # type: ignore[return-type]
             "Set OPENAI_API_KEY or save a key in configs/api_key.txt via Settings."
         )
 
-    return OpenAI(api_key=api_key), None
+    if httpx is not None:
+        version_parts = []
+        for part in str(getattr(httpx, "__version__", "0")).split("."):
+            if part.isdigit():
+                version_parts.append(int(part))
+        if version_parts and version_parts[0] >= 1:
+            return (
+                None,
+                "Installed httpx>=1.0 is incompatible with the OpenAI SDK here. "
+                "Please install httpx<1.0 (pip install 'httpx<1.0').",
+            )
+
+    try:
+        return OpenAI(api_key=api_key), None
+    except TypeError as exc:
+        if "proxies" in str(exc):
+            return (
+                None,
+                "Unable to initialize OpenAI client because the httpx version "
+                "is incompatible. Please install httpx<1.0.",
+            )
+        return None, f"Unable to initialize OpenAI client: {exc}"
 
 
 # ---------- Window helpers ----------
@@ -537,7 +575,7 @@ def api_ocr() -> tuple[str, int]:
     return jsonify({"text": text, "image_data_url": data_url})
 
 
-@app.route("/api/configs", methods=["GET", "POST"])
+@app.route("/api/configs", methods=["GET", "POST", "PUT", "DELETE"])
 def api_configs() -> tuple[str, int]:
     if request.method == "GET":
         return jsonify({"prompts": _load_prompt_entries()})
@@ -545,10 +583,38 @@ def api_configs() -> tuple[str, int]:
     data = request.get_json(silent=True) or {}
     title = (data.get("title") or "").strip()
     prompt = (data.get("prompt") or "").strip()
+
+    if request.method == "DELETE":
+        if not title:
+            return jsonify({"error": "Title is required to delete a prompt."}), 400
+        prompts, removed = _delete_prompt_entry(title)
+        if not removed:
+            return jsonify({"error": "Prompt not found."}), 404
+        return jsonify({"prompts": prompts, "message": f"Prompt '{title}' deleted."})
+
+    if request.method == "PUT":
+        original_title = (data.get("original_title") or title).strip()
+        if not original_title or not title or not prompt:
+            return jsonify({"error": "Original title, new title, and prompt are required."}), 400
+
+        prompts = _load_prompt_entries()
+        if not any(entry["title"] == original_title for entry in prompts):
+            return jsonify({"error": "Prompt not found."}), 404
+
+        updated = []
+        for entry in prompts:
+            if entry["title"] == original_title:
+                updated.append({"title": title, "prompt": prompt})
+            else:
+                updated.append(entry)
+
+        _write_prompt_entries(updated)
+        return jsonify({"prompts": updated, "message": "Prompt updated."})
+
     if not title or not prompt:
         return jsonify({"error": "Title and prompt are required."}), 400
 
-    prompts = _append_prompt_entry(title, prompt)
+    prompts = _upsert_prompt_entry(title, prompt)
     return jsonify({"prompts": prompts, "message": "Prompt saved."})
 
 
@@ -777,7 +843,11 @@ _PAGE_TEMPLATE = """
           <select id=\"promptSelect\"></select>
           <div class=\"stack\" style=\"margin-top:8px;\">
             <input id=\"newPromptTitle\" type=\"text\" placeholder=\"New prompt title\" />
-            <button id=\"savePromptBtn\" type=\"button\">Save prompt</button>
+            <div style=\"display:flex; gap:8px; flex-wrap:wrap;\">
+              <button id=\"savePromptBtn\" type=\"button\">Save prompt</button>
+              <button id=\"updatePromptBtn\" type=\"button\" class=\"secondary\">Update selected</button>
+              <button id=\"deletePromptBtn\" type=\"button\" class=\"secondary\">Delete selected</button>
+            </div>
           </div>
           <label for=\"promptText\" style=\"margin-top:8px;\">Prompt text</label>
           <textarea id=\"promptText\" placeholder=\"Select a saved prompt or type your own\"></textarea>
@@ -1075,24 +1145,34 @@ _PAGE_TEMPLATE = """
         }
       }
 
-      function populatePromptSelect() {
+      function populatePromptSelect(preferredTitle) {
         const select = document.getElementById('promptSelect');
+        const previousSelection = preferredTitle || select.value;
         select.innerHTML = '';
         const placeholder = document.createElement('option');
         placeholder.value = '';
         placeholder.textContent = 'Choose a prompt';
         select.appendChild(placeholder);
 
+        let target = null;
         promptEntries.forEach(entry => {
           const option = document.createElement('option');
           option.value = entry.title;
           option.textContent = entry.title;
           select.appendChild(option);
+          if (!target && (entry.title === previousSelection || previousSelection === '')) {
+            target = entry;
+          }
         });
 
-        if (promptEntries.length) {
-          select.value = promptEntries[0].title;
-          document.getElementById('promptText').value = promptEntries[0].prompt;
+        if (target) {
+          select.value = target.title;
+          document.getElementById('promptText').value = target.prompt;
+          document.getElementById('newPromptTitle').value = target.title;
+        } else {
+          select.value = '';
+          document.getElementById('promptText').value = '';
+          document.getElementById('newPromptTitle').value = '';
         }
       }
 
@@ -1100,6 +1180,7 @@ _PAGE_TEMPLATE = """
         const select = document.getElementById('promptSelect');
         const target = promptEntries.find(p => p.title === select.value);
         document.getElementById('promptText').value = target ? target.prompt : '';
+        document.getElementById('newPromptTitle').value = target ? target.title : '';
       }
 
       async function savePrompt() {
@@ -1122,7 +1203,61 @@ _PAGE_TEMPLATE = """
         }
         status.textContent = data.message || 'Prompt saved.';
         promptEntries = data.prompts || [];
-        document.getElementById('newPromptTitle').value = '';
+        populatePromptSelect(title);
+      }
+
+      async function updatePrompt() {
+        const select = document.getElementById('promptSelect');
+        const originalTitle = select.value;
+        const title = document.getElementById('newPromptTitle').value.trim() || originalTitle;
+        const prompt = document.getElementById('promptText').value.trim();
+        const status = document.getElementById('status');
+
+        if (!originalTitle) {
+          status.textContent = 'Select a prompt to update.';
+          return;
+        }
+        if (!prompt || !title) {
+          status.textContent = 'Provide both a title and prompt text.';
+          return;
+        }
+
+        const res = await fetch('/api/configs', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ original_title: originalTitle, title, prompt })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          status.textContent = data.error || 'Unable to update prompt.';
+          return;
+        }
+        status.textContent = data.message || 'Prompt updated.';
+        promptEntries = data.prompts || [];
+        populatePromptSelect(title);
+      }
+
+      async function deletePrompt() {
+        const select = document.getElementById('promptSelect');
+        const title = select.value;
+        const status = document.getElementById('status');
+        if (!title) {
+          status.textContent = 'Select a prompt to delete.';
+          return;
+        }
+
+        const res = await fetch('/api/configs', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          status.textContent = data.error || 'Unable to delete prompt.';
+          return;
+        }
+        status.textContent = data.message || 'Prompt deleted.';
+        promptEntries = data.prompts || [];
         populatePromptSelect();
       }
 
@@ -1177,6 +1312,8 @@ _PAGE_TEMPLATE = """
       document.getElementById('clearQueueBtn').addEventListener('click', clearQueue);
       document.getElementById('promptSelect').addEventListener('change', onPromptChange);
       document.getElementById('savePromptBtn').addEventListener('click', savePrompt);
+      document.getElementById('updatePromptBtn').addEventListener('click', updatePrompt);
+      document.getElementById('deletePromptBtn').addEventListener('click', deletePrompt);
       document.getElementById('uploadConfigBtn').addEventListener('click', uploadPromptFile);
       document.getElementById('sendAiBtn').addEventListener('click', sendAiRequest);
       window.addEventListener('orientationchange', enforceLandscape);
