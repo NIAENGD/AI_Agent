@@ -466,23 +466,23 @@ class OCRFrame(wx.Frame):
     def _build_ui(self) -> None:
         self.CreateStatusBar(number=1)
         self.SetStatusText("Ready.")
+        info_panel = wx.Panel(self)
 
         self._header = wx.StaticText(
-            self,
+            info_panel,
             label=(
                 "Workflow: Select a window → Take a capture → (Optional) Crop → OCR.\n"
                 "OCR runs locally via Tesseract."
             ),
         )
 
-        self._selected_label = wx.StaticText(self, label="Selected window: (none)")
+        self._selected_label = wx.StaticText(info_panel, label="Selected window: (none)")
         self._selected_label.SetForegroundColour(wx.Colour(80, 80, 80))
 
         info_sizer = wx.BoxSizer(wx.VERTICAL)
         info_sizer.Add(self._header, 0, wx.EXPAND | wx.BOTTOM, self.FromDIP(6))
         info_sizer.Add(self._selected_label, 0, wx.EXPAND)
 
-        info_panel = wx.Panel(self)
         info_panel.SetSizer(info_sizer)
 
         # Main split area: preview (left) and OCR output (right).
