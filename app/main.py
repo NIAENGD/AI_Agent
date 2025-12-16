@@ -18,6 +18,37 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+
+def _install_requirements() -> bool:
+    requirements_path = Path(__file__).resolve().parent.parent / "requirements.txt"
+    if not requirements_path.exists():
+        return False
+
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", str(requirements_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        return False
+
+    return True
+
+
+def _ensure_flask_installed() -> None:
+    if importlib.util.find_spec("flask") is not None:
+        return
+
+    if _install_requirements() and importlib.util.find_spec("flask") is not None:
+        return
+
+    raise RuntimeError("Flask is not installed. Please run: pip install -r requirements.txt")
+
+
+_ensure_flask_installed()
+
 from flask import (
     Flask,
     jsonify,
@@ -131,18 +162,7 @@ def _ensure_dependency(key: str, friendly_name: str) -> Optional[str]:
 
 
 def _attempt_install_requirements() -> bool:
-    requirements_path = Path(__file__).resolve().parent.parent / "requirements.txt"
-    if not requirements_path.exists():
-        return False
-
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-r", str(requirements_path)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError:
+    if not _install_requirements():
         return False
 
     _refresh_optional_dependencies()
