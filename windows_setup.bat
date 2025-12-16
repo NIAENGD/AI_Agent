@@ -23,7 +23,8 @@ set "PY_VERSION=3.11.9"
 set "PY_INSTALLER_URL=https://www.python.org/ftp/python/%PY_VERSION%/python-%PY_VERSION%-amd64.exe"
 set "PYTHON_HOME=%PROJECT_ROOT%\.python"
 set "VENV_DIR=.venv"
-set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
+set "VENV_PATH=%PROJECT_ROOT%\%VENV_DIR%"
+set "VENV_PYTHON=%VENV_PATH%\Scripts\python.exe"
 set "REQUIREMENTS=requirements.txt"
 set "APP_ENTRY=app\main.py"
 set "GIT_REMOTE=https://github.com/NIAENGD/AI_Agent.git"
@@ -81,10 +82,18 @@ exit /b 0
 
 :ensure_local_python
 if exist "%PYTHON_HOME%\python.exe" (
-    set "PYTHON_CMD=%PYTHON_HOME%\python.exe"
-    echo Found project-local Python at %PYTHON_CMD%.
-    exit /b 0
+    "%PYTHON_HOME%\python.exe" -V >nul 2>nul
+    if not errorlevel 1 (
+        set "PYTHON_CMD=%PYTHON_HOME%\python.exe"
+        echo Found project-local Python at %PYTHON_CMD%.
+        exit /b 0
+    ) else (
+        echo Existing project-local Python appears to be broken. Reinstalling...
+        rd /s /q "%PYTHON_HOME%" >nul 2>nul
+    )
 )
+
+if not exist "%PYTHON_HOME%" mkdir "%PYTHON_HOME%" >nul 2>nul
 
 echo Downloading Python %PY_VERSION% installer...
 set "PY_INSTALLER=%TEMP%\python-%PY_VERSION%-amd64.exe"
@@ -102,6 +111,10 @@ if errorlevel 1 (
 )
 
 del "%PY_INSTALLER%" >nul 2>nul
+if not exist "%PYTHON_HOME%\python.exe" (
+    echo Python installer completed but python.exe was not found.
+    exit /b 1
+)
 set "PYTHON_CMD=%PYTHON_HOME%\python.exe"
 echo Installed Python to %PYTHON_CMD%
 %PYTHON_CMD% -m pip config set global.no-cache-dir true >nul 2>nul
@@ -113,22 +126,22 @@ exit /b %errorlevel%
 
 :setup_venv
 call :ensure_python_available || exit /b 1
-if not exist "%VENV_DIR%\Scripts\activate.bat" (
-    echo Creating virtual environment at "%VENV_DIR%"...
-    "%PYTHON_CMD%" -m venv "%VENV_DIR%"
+if not exist "%VENV_PATH%\Scripts\activate.bat" (
+    echo Creating virtual environment at "%VENV_PATH%"...
+    "%PYTHON_CMD%" -m venv "%VENV_PATH%"
     if errorlevel 1 (
         echo Failed to create virtual environment.
         exit /b 1
     )
 ) else (
-    echo Virtual environment already present at "%VENV_DIR%".
+    echo Virtual environment already present at "%VENV_PATH%".
 )
-echo To activate manually run: "%VENV_DIR%\Scripts\activate.bat"
+echo To activate manually run: "%VENV_PATH%\Scripts\activate.bat"
 exit /b 0
 
 :install_requirements
 call :setup_venv || exit /b 1
-call "%VENV_DIR%\Scripts\activate.bat"
+call "%VENV_PATH%\Scripts\activate.bat"
 "%VENV_PYTHON%" -m pip install --upgrade pip
 if exist "%REQUIREMENTS%" (
     "%VENV_PYTHON%" -m pip install -r "%REQUIREMENTS%"
@@ -257,7 +270,7 @@ if not exist "%APP_ENTRY%" (
 )
 call :install_requirements || exit /b 1
 call :install_tesseract || exit /b 1
-call "%VENV_DIR%\Scripts\activate.bat"
+call "%VENV_PATH%\Scripts\activate.bat"
 for %%p in ("%TESSERACT_CMD%") do set "PATH=%%~dpf;%PATH%"
 "%VENV_PYTHON%" "%APP_ENTRY%"
 exit /b %errorlevel%
