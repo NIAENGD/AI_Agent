@@ -219,12 +219,13 @@ start "AI Agent" "%SELF_PATH%" /relaunch
 exit /b 0
 
 :bootstrap_python
-if exist "%PY_HOME%\python.exe" (
-    set "PYTHON_CMD=%PY_HOME%\python.exe"
+call :locate_python_exe
+if defined PYTHON_CMD (
     "%PYTHON_CMD%" -V >nul 2>nul
     if not errorlevel 1 exit /b 0
     echo Existing Python appears broken. Reinstalling...
     rd /s /q "%PY_HOME%" >nul 2>nul
+    set "PYTHON_CMD="
 )
 if not exist "%PY_HOME%" mkdir "%PY_HOME%" >nul 2>nul
 set "PY_INSTALLER=%TEMP%\python-%PY_VERSION%-amd64.exe"
@@ -236,19 +237,24 @@ if errorlevel 1 (
 )
 echo Installing private Python runtime...
 "%PY_INSTALLER%" /quiet InstallAllUsers=0 PrependPath=0 Include_pip=1 TargetDir="%PY_HOME%"
-if errorlevel 1 (
-    echo Python installer returned an error.
-    exit /b 1
-)
-if exist "%PY_INSTALLER%" del "%PY_INSTALLER%" >nul 2>nul
-if not exist "%PY_HOME%\python.exe" (
-    echo Python installation did not produce python.exe. Attempting embeddable runtime...
-    call :install_embeddable_python || exit /b 1
-)
-set "PYTHON_CMD=%PY_HOME%\python.exe"
-call :ensure_pip "%PYTHON_CMD%" || exit /b 1
-"%PYTHON_CMD%" -m pip config set global.no-cache-dir true >nul 2>nul
-exit /b 0
+    if errorlevel 1 (
+        echo Python installer returned an error.
+        exit /b 1
+    )
+    if exist "%PY_INSTALLER%" del "%PY_INSTALLER%" >nul 2>nul
+    call :locate_python_exe
+    if not defined PYTHON_CMD (
+        echo Python installation did not produce python.exe. Attempting embeddable runtime...
+        call :install_embeddable_python || exit /b 1
+        call :locate_python_exe
+    )
+    if not defined PYTHON_CMD (
+        echo No usable Python interpreter found after installation.
+        exit /b 1
+    )
+    call :ensure_pip "%PYTHON_CMD%" || exit /b 1
+    "%PYTHON_CMD%" -m pip config set global.no-cache-dir true >nul 2>nul
+    exit /b 0
 
 :install_embeddable_python
 echo Downloading embeddable Python %PY_VERSION% ...
@@ -278,25 +284,37 @@ set "PY_TAG="
 for /f "tokens=1-2 delims=." %%a in ("%PY_VERSION%") do (
     set "PY_TAG=%%a%%b"
 )
-if defined PY_TAG if exist "%PY_HOME%\python%PY_TAG%._pth" (
-    (
-        echo python%PY_TAG%.zip
-        echo .
-        echo Lib
-        echo Lib\site-packages
-        echo import site
-    )> "%PY_HOME%\python%PY_TAG%._pth"
-)
+    if defined PY_TAG if exist "%PY_HOME%\python%PY_TAG%._pth" (
+        (
+            echo python%PY_TAG%.zip
+            echo .
+            echo Lib
+            echo Lib\site-packages
+            echo import site
+        )> "%PY_HOME%\python%PY_TAG%._pth"
+    )
 
+    exit /b 0
+
+:locate_python_exe
+set "PYTHON_CMD="
+for %%p in ("%PY_HOME%\python.exe" "%PY_HOME%\python3.exe" "%PY_HOME%\pythonw.exe") do (
+    if exist %%~p if not defined PYTHON_CMD set "PYTHON_CMD=%%~fp"
+)
 exit /b 0
 
 :bootstrap_dependencies
-if not exist "%SRC_DIR%" (
-    echo Source directory missing at %SRC_DIR%.
-    exit /b 1
-)
-set "USE_VENV=1"
-"%PY_HOME%\python.exe" -c "import venv" >nul 2>nul || set "USE_VENV="
+    if not exist "%SRC_DIR%" (
+        echo Source directory missing at %SRC_DIR%.
+        exit /b 1
+    )
+    if not defined PYTHON_CMD call :locate_python_exe
+    if not defined PYTHON_CMD (
+        echo Python interpreter unavailable; bootstrap failed.
+        exit /b 1
+    )
+    set "USE_VENV=1"
+    "%PYTHON_CMD%" -c "import venv" >nul 2>nul || set "USE_VENV="
 
 if defined USE_VENV if not exist "%VENV_DIR%" (
     echo Creating virtual environment...
@@ -312,9 +330,9 @@ if defined USE_VENV (
     set "APP_PY=%VENV_PY%"
     "%APP_PY%" -m pip install --upgrade pip >nul
 ) else (
-    set "APP_PY=%PY_HOME%\python.exe"
-    call :ensure_pip "%APP_PY%" || exit /b 1
-)
+        set "APP_PY=%PYTHON_CMD%"
+        call :ensure_pip "%APP_PY%" || exit /b 1
+    )
 if exist "%REQ_FILE%" (
     echo Installing Python dependencies...
     "%APP_PY%" -m pip install -r "%REQ_FILE%"
@@ -363,11 +381,11 @@ if not exist "%APP_ENTRY%" (
     echo Application entry point missing: %APP_ENTRY%
     exit /b 1
 )
-if defined USE_VENV (
-    set "PATH=%TESS_HOME%;%VENV_DIR%\Scripts;%PATH%"
-) else (
-    set "PATH=%TESS_HOME%;%PY_HOME%;%PATH%"
-)
+    if defined USE_VENV (
+        set "PATH=%TESS_HOME%;%VENV_DIR%\Scripts;%PATH%"
+    ) else (
+        set "PATH=%TESS_HOME%;%PY_HOME%;%PY_HOME%\Scripts;%PATH%"
+    )
 echo Launching AI Agent...
 "%APP_PY%" "%APP_ENTRY%"
 exit /b %errorlevel%
