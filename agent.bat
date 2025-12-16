@@ -1,5 +1,7 @@
 @echo off
-setlocal EnableDelayedExpansion
+rem Ensure command extensions stay enabled so label calls and conditional operators
+rem like "||" work reliably even if the host shell disables them by default.
+setlocal EnableExtensions EnableDelayedExpansion
 
 rem =============================================================
 rem AI Agent - Single entry installer/launcher
@@ -329,6 +331,10 @@ if defined USE_VENV if not exist "%VENV_PY%" (
 if defined USE_VENV (
     set "APP_PY=%VENV_PY%"
     "%APP_PY%" -m pip install --upgrade pip >nul
+    if errorlevel 1 (
+        echo Failed to upgrade pip inside virtual environment.
+        exit /b 1
+    )
 ) else (
         set "APP_PY=%PYTHON_CMD%"
         call :ensure_pip "%APP_PY%" || exit /b 1
@@ -336,6 +342,10 @@ if defined USE_VENV (
 if exist "%REQ_FILE%" (
     echo Installing Python dependencies...
     "%APP_PY%" -m pip install -r "%REQ_FILE%"
+    if errorlevel 1 (
+        echo Dependency installation failed.
+        exit /b 1
+    )
 )
 call :ensure_tesseract || exit /b 1
 exit /b 0
