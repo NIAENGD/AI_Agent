@@ -677,7 +677,7 @@ def api_ai_response() -> tuple[str, int]:
     if error:
         return jsonify({"error": error}), 400
 
-    model = os.environ.get("AI_AGENT_MODEL", "gpt-4.1-mini")
+    model = os.environ.get("AI_AGENT_MODEL", "gpt-5.2")
 
     try:
         response = client.responses.create(
