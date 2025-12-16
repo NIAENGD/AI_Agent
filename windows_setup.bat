@@ -32,7 +32,6 @@ set "TESSERACT_HOME=%PROJECT_ROOT%\.tesseract"
 set "TESSERACT_EXE=%TESSERACT_HOME%\tesseract.exe"
 
 call :print_header
-call :enforce_startup_update || goto end
 
 :menu
 echo.
@@ -66,26 +65,6 @@ echo  AI Agent - Windows helper script (all-in-one)
 echo  Location: %PROJECT_ROOT%
 echo  Python target: %PYTHON_HOME%
 echo ==================================================
-exit /b 0
-
-:check_internet
-powershell -NoLogo -NoProfile -Command "if (Test-Connection -Quiet -Count 1 8.8.8.8) { exit 0 } else { exit 1 }" >nul
-exit /b %errorlevel%
-
-:enforce_startup_update
-echo Verifying internet connectivity for mandatory update...
-call :check_internet
-if errorlevel 1 (
-    echo No internet connection detected. Exiting to enforce mandatory updates.
-    exit /b 1
-)
-echo Internet connection detected. Pulling latest changes...
-call :update_project
-if errorlevel 1 (
-    echo Git update failed. Resolve the issue and rerun the script.
-    exit /b 1
-)
-echo Repository is up to date.
 exit /b 0
 
 :detect_python
@@ -197,45 +176,32 @@ if errorlevel 1 (
 )
 
 if not exist "%PROJECT_ROOT%\\.git" (
-    call :workdir_ready_for_clone
-    if errorlevel 1 (
-        echo No git repository found and this folder already has files.
-        echo For auto-updates, place ONLY windows_setup.bat in an empty folder and rerun.
-        echo The script will clone the latest project automatically.
-        exit /b 1
-    )
-
-    echo No git repository detected. Bootstrapping from %GIT_REMOTE% ...
-    pushd "%PROJECT_ROOT%" >nul
-    git init
-    git remote add origin "%GIT_REMOTE%" >nul 2>nul
-    git fetch origin
-    git checkout -B main origin/main
-    set "GIT_STATUS=%errorlevel%"
-    popd >nul
-    exit /b %GIT_STATUS%
+    echo No git repository found in %PROJECT_ROOT%.
+    echo Run windows_install.bat to create a clean installation with update support.
+    exit /b 1
 )
 
 pushd "%PROJECT_ROOT%" >nul
+for /f "delims=" %%s in ('git status --porcelain') do (
+    set "GIT_DIRTY=1"
+)
+if defined GIT_DIRTY (
+    echo Working tree is not clean. Skip pulling to avoid overwriting local files.
+    echo Please commit, stash, or move the files before retrying the update.
+    popd >nul
+    exit /b 1
+)
+
 git rev-parse --abbrev-ref --symbolic-full-name @{u} >nul 2>nul
 if errorlevel 1 (
     echo No upstream configured for current branch. Defaulting to origin/main...
-    git pull origin main
+    git pull --ff-only origin main
 ) else (
-    git pull
+    git pull --ff-only
 )
 set "GIT_STATUS=%errorlevel%"
 popd >nul
 exit /b %GIT_STATUS%
-
-:workdir_ready_for_clone
-set "HAS_FOREIGN_FILES=0"
-for /f "delims=" %%f in ('dir /b') do (
-    if /i not "%%f"=="windows_setup.bat" if /i not "%%f"=="." if /i not "%%f"==".." (
-        set "HAS_FOREIGN_FILES=1"
-    )
-)
-if %HAS_FOREIGN_FILES%==0 ( exit /b 0 ) else ( exit /b 1 )
 
 :run_app
 if not exist "%APP_ENTRY%" (
