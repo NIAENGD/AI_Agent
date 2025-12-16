@@ -1,6 +1,6 @@
 # AI Agent Phase 2
 
-A Windows-focused desktop utility that lets a user pick any open window, take a screenshot, and process it locally with OCR. The GUI is built with PyQt5 and relies on local tools only. This phase ships with a single Windows launcher, `agent.bat`, that installs everything in-place, keeps itself updated, and always starts the latest version of the app.
+A Windows-focused desktop utility that lets a user pick any open window, take a screenshot, and process it locally with OCR. The GUI is built with PyQt5 and relies on local tools only. This phase ships with a single Windows PowerShell launcher, `agent.ps1`, that installs everything in-place, keeps itself updated, and always starts the latest version of the app.
 
 ## Features
 - **Start/Settings hub**: initial view with Start (window selection) and Settings (Tesseract path) buttons.
@@ -14,8 +14,8 @@ A Windows-focused desktop utility that lets a user pick any open window, take a 
 - Tesseract OCR installed locally (https://github.com/tesseract-ocr/tesseract). Note the installation path (e.g., `C:\\Program Files\\Tesseract-OCR\\tesseract.exe`).
 - Dependencies listed in `requirements.txt`.
 
-### One-file Windows setup (`agent.bat`)
-Download **only** `agent.bat` to the folder where you want the app to live, then double-click it (or run it from `cmd`). Everything happens automatically in subfolders next to the script—no prompts or extra tools required:
+### One-file Windows setup (`agent.ps1`)
+Download **only** `agent.ps1` to the folder where you want the app to live, then double-click it (or run it from PowerShell). Everything happens automatically in subfolders next to the script—no prompts or extra tools required:
 
 - Private Python runtime at `.\\.python`.
 - Virtual environment and dependencies in `.venv`.
@@ -26,7 +26,7 @@ Behavior:
 1. **First run**: downloads the latest code (via Git if available, otherwise a zip), installs Python, creates the virtual environment, installs dependencies, provisions Tesseract, and launches the app.
 2. **Subsequent runs**: checks for updates first. If new code is found, it updates the source, refreshes the launcher if needed, restarts itself, revalidates dependencies, and then opens the app so you always use the newest version.
 
-Everything stays self-contained in the folder beside `agent.bat`, making the launcher the only entry point you need.
+Everything stays self-contained in the folder beside `agent.ps1`, making the launcher the only entry point you need.
 
 ### Manual install (without the .bat helper)
 Install dependencies:
