@@ -3,7 +3,7 @@
 This version replaces the original wxPython desktop app with a Flask-powered
 web interface. It exposes the same capabilities—selecting a window, capturing
 its contents, optionally cropping the capture, and running OCR—without any
-fullscreen mode. The server listens on port 6000 and binds to 0.0.0.0 so it can
+fullscreen mode. The server listens on a browser-safe port (default 8000) and binds to 0.0.0.0 so it can
 be reached over the network.
 """
 from __future__ import annotations
@@ -12,6 +12,7 @@ import io
 import importlib
 import importlib.util
 import os
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -658,11 +659,100 @@ _PAGE_TEMPLATE = """
 # ---------- App entry ----------
 
 
+def _is_unsafe_browser_port(port: int) -> bool:
+    """Return True if modern Chromium-based browsers commonly block this port.
+
+    Chrome/Edge intentionally block several ports (including 6000, used by X11),
+    which surfaces in the browser as ERR_UNSAFE_PORT even if Flask is running.
+    """
+    if port <= 0 or port > 65535:
+        return True
+    # X11 ports (6000-6063) are blocked by Chromium.
+    if 6000 <= port <= 6063:
+        return True
+    # Commonly blocked legacy/IRC ports.
+    if port in {6665, 6666, 6667, 6668, 6669}:
+        return True
+    return False
+
+
+def _is_port_available(host: str, port: int) -> bool:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+        return True
+    except OSError:
+        return False
+
+
+def _choose_bind(host: str, requested_port: int) -> tuple[str, int, Optional[str]]:
+    """Return (host, port, warning_message)."""
+    warning: Optional[str] = None
+
+    port = requested_port
+    if _is_unsafe_browser_port(port):
+        warning = (
+            f"Requested port {port} is blocked by Chrome/Edge (ERR_UNSAFE_PORT). "
+            "Switching to 8000."
+        )
+        port = 8000
+
+    # If the chosen port is already taken, scan forward a bit.
+    if port != 0 and not _is_port_available(host, port):
+        for candidate in range(port + 1, port + 51):
+            if _is_port_available(host, candidate) and not _is_unsafe_browser_port(candidate):
+                if warning:
+                    warning += f" (Port {port} was in use; using {candidate} instead.)"
+                else:
+                    warning = f"Port {port} was in use; using {candidate} instead."
+                port = candidate
+                break
+        else:
+            # Let the OS pick a free port.
+            if warning:
+                warning += " (Falling back to an OS-assigned free port.)"
+            else:
+                warning = "Falling back to an OS-assigned free port."
+            port = 0
+
+    return host, port, warning
+
+
 def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("AI_AGENT_HOST", "0.0.0.0"),
+        help="Bind host (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("AI_AGENT_PORT", os.environ.get("PORT", "8000"))),
+        help="Bind port (default: 8000)",
+    )
+    parser.add_argument(
+        "--public",
+        action="store_true",
+        help="Alias for --host 0.0.0.0 (useful for LAN access)",
+    )
+
+    args, _unknown = parser.parse_known_args()
+
+    host = "0.0.0.0" if args.public else args.host
+    host, port, warning = _choose_bind(host, args.port)
+
+    if warning:
+        print(warning, file=sys.stderr)
+
     state.tesseract_path = _detect_local_tesseract()
     _apply_tesseract_path()
-    app.run(host="0.0.0.0", port=6000)
+    app.run(host=host, port=port)
     return 0
+
 
 
 if __name__ == "__main__":
