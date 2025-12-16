@@ -27,7 +27,8 @@ set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 set "REQUIREMENTS=requirements.txt"
 set "APP_ENTRY=app\main.py"
 set "GIT_REMOTE=https://github.com/NIAENGD/AI_Agent.git"
-set "TESSERACT_INSTALLER_URL=https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.3.0.20230401.exe"
+set "TESSERACT_INSTALLER_URL=https://github.com/UB-Mannheim/tesseract/releases/latest/download/tesseract-ocr-w64-setup.exe"
+set "TESSERACT_INSTALLER_URL_FALLBACK=https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup.exe"
 set "TESSERACT_HOME=%PROJECT_ROOT%\.tesseract"
 set "TESSERACT_EXE=%TESSERACT_HOME%\tesseract.exe"
 
@@ -138,16 +139,61 @@ exit /b 0
 
 :install_tesseract
 echo Checking for Tesseract OCR...
-if exist "%TESSERACT_EXE%" (
-    echo Found project-local Tesseract at "%TESSERACT_EXE%".
+set "TESSERACT_CMD="
+call :detect_tesseract
+if not errorlevel 1 (
+    echo Found Tesseract at "%TESSERACT_CMD%".
     exit /b 0
 )
 
-echo Downloading Tesseract installer (UB Mannheim build)...
+echo Attempting to install Tesseract automatically (no user input required)...
+call :install_tesseract_winget
+if not errorlevel 1 (
+    call :detect_tesseract
+    if not errorlevel 1 (
+        echo Installed Tesseract using winget at "%TESSERACT_CMD%".
+        exit /b 0
+    )
+)
+
+call :install_tesseract_portable || exit /b 1
+call :detect_tesseract
+if not errorlevel 1 (
+    echo Installed project-local Tesseract at "%TESSERACT_CMD%".
+    exit /b 0
+)
+
+echo Tesseract installation completed, but executable was not found.
+exit /b 1
+
+:detect_tesseract
+set "TESSERACT_CMD="
+if exist "%TESSERACT_EXE%" set "TESSERACT_CMD=%TESSERACT_EXE%"
+if not defined TESSERACT_CMD (
+    for /f "delims=" %%t in ('where tesseract 2^>nul') do if not defined TESSERACT_CMD set "TESSERACT_CMD=%%t"
+)
+if not defined TESSERACT_CMD exit /b 1
+for %%p in ("%TESSERACT_CMD%") do set "TESSERACT_HOME=%%~dpf"
+exit /b 0
+
+:install_tesseract_winget
+winget --version >nul 2>nul
+if errorlevel 1 exit /b 1
+echo Winget detected. Installing Tesseract from official source...
+winget install -e --id Tesseract-OCR.Tesseract --silent --accept-package-agreements --accept-source-agreements
+exit /b %errorlevel%
+
+:install_tesseract_portable
+echo Downloading portable Tesseract installer (UB Mannheim build)...
 set "TESS_INSTALLER=%TEMP%\tesseract-ocr-w64-setup.exe"
-powershell -NoLogo -NoProfile -Command "Invoke-WebRequest -Uri '%TESSERACT_INSTALLER_URL%' -OutFile '%TESS_INSTALLER%'" >nul
+powershell -NoLogo -NoProfile -Command "try { $ProgressPreference='SilentlyContinue'; $release=Invoke-RestMethod -UseBasicParsing -Headers @{ 'User-Agent'='AI-Agent-setup' } 'https://api.github.com/repos/UB-Mannheim/tesseract/releases/latest'; $asset=$release.assets | Where-Object { $_.name -like 'tesseract-ocr-w64-setup-*.exe' } | Sort-Object -Property name -Descending | Select-Object -First 1; $url=$asset.browser_download_url; if(-not $url){ $url='%TESSERACT_INSTALLER_URL%' }; Invoke-WebRequest -UseBasicParsing -Headers @{ 'User-Agent'='AI-Agent-setup' } -Uri $url -OutFile '%TESS_INSTALLER%' } catch { exit 1 }" >nul
 if errorlevel 1 (
-    echo Failed to download Tesseract installer.
+    echo Primary download failed. Trying fallback mirror...
+    powershell -NoLogo -NoProfile -Command "try { $ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Headers @{ 'User-Agent'='AI-Agent-setup' } -Uri '%TESSERACT_INSTALLER_URL_FALLBACK%' -OutFile '%TESS_INSTALLER%' } catch { exit 1 }" >nul
+)
+
+if errorlevel 1 (
+    echo Failed to download Tesseract installer from both primary and fallback URLs.
     exit /b 1
 )
 
@@ -159,14 +205,7 @@ if errorlevel 1 (
     exit /b 1
 )
 del "%TESS_INSTALLER%" >nul 2>nul
-
-if exist "%TESSERACT_EXE%" (
-    echo Installed project-local Tesseract at "%TESSERACT_EXE%".
-    exit /b 0
-)
-
-echo Tesseract installation completed, but executable was not found at %TESSERACT_EXE%.
-exit /b 1
+exit /b 0
 
 :update_project
 git --version >nul 2>nul
@@ -211,8 +250,7 @@ if not exist "%APP_ENTRY%" (
 call :install_requirements || exit /b 1
 call :install_tesseract || exit /b 1
 call "%VENV_DIR%\Scripts\activate.bat"
-set "PATH=%TESSERACT_HOME%;%PATH%"
-set "TESSERACT_CMD=%TESSERACT_EXE%"
+for %%p in ("%TESSERACT_CMD%") do set "PATH=%%~dpf;%PATH%"
 "%VENV_PYTHON%" "%APP_ENTRY%"
 exit /b %errorlevel%
 
