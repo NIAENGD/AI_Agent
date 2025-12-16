@@ -25,6 +25,7 @@ set "SRC_DIR=%INSTALL_ROOT%\source"
 set "PY_HOME=%INSTALL_ROOT%\.python"
 set "VENV_DIR=%INSTALL_ROOT%\.venv"
 set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
+set "APP_PY="
 set "APP_ENTRY=%SRC_DIR%\app\main.py"
 set "REQ_FILE=%SRC_DIR%\requirements.txt"
 set "GIT_REMOTE=https://github.com/NIAENGD/AI_Agent.git"
@@ -245,6 +246,7 @@ if not exist "%PY_HOME%\python.exe" (
     call :install_embeddable_python || exit /b 1
 )
 set "PYTHON_CMD=%PY_HOME%\python.exe"
+call :ensure_pip "%PYTHON_CMD%" || exit /b 1
 "%PYTHON_CMD%" -m pip config set global.no-cache-dir true >nul 2>nul
 exit /b 0
 
@@ -293,19 +295,29 @@ if not exist "%SRC_DIR%" (
     echo Source directory missing at %SRC_DIR%.
     exit /b 1
 )
-if not exist "%VENV_DIR%" (
+set "USE_VENV=1"
+"%PY_HOME%\python.exe" -c "import venv" >nul 2>nul || set "USE_VENV="
+
+if defined USE_VENV if not exist "%VENV_DIR%" (
     echo Creating virtual environment...
-    "%PY_HOME%\python.exe" -m venv "%VENV_DIR%"
+    "%PY_HOME%\python.exe" -m venv "%VENV_DIR%" >nul 2>nul
 )
-if not exist "%VENV_PY%" (
+if defined USE_VENV if not exist "%VENV_PY%" (
     echo Virtual environment looks broken.
     rd /s /q "%VENV_DIR%" >nul 2>nul
-    "%PY_HOME%\python.exe" -m venv "%VENV_DIR%"
+    "%PY_HOME%\python.exe" -m venv "%VENV_DIR%" >nul 2>nul
 )
-"%VENV_PY%" -m pip install --upgrade pip >nul
+
+if defined USE_VENV (
+    set "APP_PY=%VENV_PY%"
+    "%APP_PY%" -m pip install --upgrade pip >nul
+) else (
+    set "APP_PY=%PY_HOME%\python.exe"
+    call :ensure_pip "%APP_PY%" || exit /b 1
+)
 if exist "%REQ_FILE%" (
     echo Installing Python dependencies...
-    "%VENV_PY%" -m pip install -r "%REQ_FILE%"
+    "%APP_PY%" -m pip install -r "%REQ_FILE%"
 )
 call :ensure_tesseract || exit /b 1
 exit /b 0
@@ -351,11 +363,35 @@ if not exist "%APP_ENTRY%" (
     echo Application entry point missing: %APP_ENTRY%
     exit /b 1
 )
-set "PATH=%TESS_HOME%;%VENV_DIR%\Scripts;%PATH%"
+if defined USE_VENV (
+    set "PATH=%TESS_HOME%;%VENV_DIR%\Scripts;%PATH%"
+) else (
+    set "PATH=%TESS_HOME%;%PY_HOME%;%PATH%"
+)
 echo Launching AI Agent...
-"%VENV_PY%" "%APP_ENTRY%"
+"%APP_PY%" "%APP_ENTRY%"
 exit /b %errorlevel%
 
 :fail
 endlocal
 exit /b 1
+
+:ensure_pip
+set "ENSURE_PY=%~1"
+if not defined ENSURE_PY exit /b 1
+"%ENSURE_PY%" -m pip --version >nul 2>nul && exit /b 0
+set "GET_PIP=%TEMP%\get-pip.py"
+powershell -NoLogo -NoProfile -Command "try { $ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%GET_PIP%' } catch { exit 1 }" >nul
+if errorlevel 1 (
+    echo Failed to download get-pip.py.
+    if exist "%GET_PIP%" del "%GET_PIP%" >nul 2>nul
+    exit /b 1
+)
+"%ENSURE_PY%" "%GET_PIP%" >nul
+set "RC=%errorlevel%"
+if exist "%GET_PIP%" del "%GET_PIP%" >nul 2>nul
+if not "%RC%"=="0" (
+    echo Failed to install pip.
+    exit /b 1
+)
+exit /b 0
