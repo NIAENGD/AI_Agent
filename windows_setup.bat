@@ -146,12 +146,16 @@ if not exist "%PYTHON_HOME%\python.exe" (
     exit /b 1
 )
 
-rem Ensure the embeddable runtime can import stdlib by uncommenting zip import line
-for /f "usebackq delims=" %%l in (`findstr /n /r /c:"^#\?import site$" "%PYTHON_HOME%\python311._pth" 2^>nul`) do (
-    set "LINE=%%l"
-    for /f "tokens=1 delims=:" %%n in ("%%l") do set "LINENO=%%n"
+rem Ensure embeddable runtime can import stdlib and installed packages
+if exist "%PYTHON_HOME%\python311._pth" (
+    (
+        echo python311.zip
+        echo .
+        echo Lib
+        echo Lib\site-packages
+        echo import site
+    )> "%PYTHON_HOME%\python311._pth"
 )
-if defined LINENO powershell -NoLogo -NoProfile -Command "(Get-Content -Path '%PYTHON_HOME%\python311._pth') | ForEach-Object { if((\$global:i++) -eq (%LINENO%-1)){ if($_ -like '#import site'){ 'import site' } else { $_ } } else { $_ } } | Set-Content -Path '%PYTHON_HOME%\python311._pth'"
 
 exit /b 0
 
