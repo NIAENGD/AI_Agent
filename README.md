@@ -1,12 +1,11 @@
 # AI Agent Phase 2
 
-A Windows-focused desktop utility that lets a user pick any open window, take a screenshot, and process it locally with OCR. The GUI is built with wxPython and relies on local tools only. This phase ships with a single Windows PowerShell launcher, `agent.ps1`, that installs everything in-place, keeps itself updated, and always starts the latest version of the app.
+A Windows-focused utility that lets a user pick any open window, take a screenshot, and process it locally with OCR. The GUI now runs in a browser via a Flask web server so you can drive it remotely. This phase ships with a single Windows PowerShell launcher, `agent.ps1`, that installs everything in-place, keeps itself updated, and always starts the latest version of the app.
 
 ## Features
-- **Start/Settings hub**: initial view with Start (window selection) and Settings (Tesseract path) buttons.
 - **Window selection**: lists current top-level windows on Windows using `pygetwindow`.
-- **Capture & preview**: "Take" captures the selected window and shows it in a preview pane.
-- **Local OCR**: "Process" runs OCR on the captured image with `pytesseract` (Tesseract CLI required). Intended to read text, charts, math, and other on-screen content.
+- **Capture & preview**: Capture grabs the selected window and shows it in a browser preview.
+- **Crop & OCR**: Drag on the preview to set a crop (or leave unset) and run OCR via `pytesseract`.
 
 ## Requirements
 - Windows 10/11
@@ -40,13 +39,16 @@ From the repository root:
 python app/main.py
 ```
 
+The web UI binds to `0.0.0.0:6000` so you can open it locally or from another machine on the network. Navigate to `http://<host>:6000/` to use it.
+
 ### Workflow
-1. Click **Start** and pick a window from the list.
-2. Click **Take** to capture that window. The preview updates on the right.
-3. Click **Process** to run local OCR. Results appear in a dialog (full text in the Details section).
-4. Use **Settings** to set the `tesseract.exe` path if it is not on `PATH`.
+1. Click **Refresh** to list open windows, then pick one.
+2. Click **Capture** to grab that window. The preview updates in the browser.
+3. Drag on the preview to set a crop (or skip to use the full image).
+4. Click **Run OCR** to process locally with Tesseract. Results show in the OCR output panel.
+5. Use **Save settings** to provide the `tesseract.exe` path if it is not on `PATH`.
 
 ## Notes
-- On startup the app now performs a dependency check (wxPython, pygetwindow, pyautogui, Pillow, pytesseract, pywin32) and shows a single actionable message if anything is missing—run `pip install -r requirements.txt` to resolve them.
+- On startup the app tries to install missing dependencies automatically using `requirements.txt`.
 - Screen capture first uses Win32's `PrintWindow` via `pywin32` for compatibility with hardware-accelerated windows. If that fails, it falls back to `pyautogui` and requires the window to be visible and not minimized.
 - OCR accuracy depends on your Tesseract installation and language packs.
