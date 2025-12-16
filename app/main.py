@@ -1,34 +1,30 @@
-"""Desktop GUI for window capture and OCR.
+"""Web-based UI for window capture and OCR.
 
-This application targets Windows and uses wxPython for the GUI. It allows users
-to select an open window, capture its contents, optionally crop the captured
-image, and run OCR on the (optionally cropped) capture using a local Tesseract
-installation.
-
-Key UX goals:
-- Touchscreen-friendly, DPI-aware, resizable UI.
-- No "capture successful" popup after taking a capture; the preview updates in-place.
-- Crop selection is drawn on the preview, but OCR runs on the original-resolution image.
-
-Updates in this version:
-- Splitter ratio is configurable via a single ratio variable for windowed vs fullscreen.
-- Bottom buttons fill the available width (no unused blank space), and reflow into
-  multiple rows automatically when the window is narrow.
+This version replaces the original wxPython desktop app with a Flask-powered
+web interface. It exposes the same capabilities—selecting a window, capturing
+its contents, optionally cropping the capture, and running OCR—without any
+fullscreen mode. The server listens on port 6000 and binds to 0.0.0.0 so it can
+be reached over the network.
 """
-
 from __future__ import annotations
 
+import io
 import importlib
 import importlib.util
 import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from math import ceil
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-import wx
+from flask import (
+    Flask,
+    jsonify,
+    render_template_string,
+    request,
+    send_file,
+)
 
 try:  # type: ignore
     import pygetwindow as gw
@@ -65,1043 +61,587 @@ class SelectedWindow:
         return self.left, self.top, self.width, self.height
 
 
-def pil_to_bitmap(image: "Image.Image") -> wx.Bitmap:
-    """Convert a PIL image to a wx.Bitmap for preview rendering."""
-    rgba = image.convert("RGBA")
-    width, height = rgba.size
-    return wx.Bitmap.FromBufferRGBA(width, height, rgba.tobytes())
+@dataclass
+class AppState:
+    selected_window: Optional[SelectedWindow] = None
+    captured_image: Optional["Image.Image"] = None
+    crop_box: Optional[Tuple[int, int, int, int]] = None
+    tesseract_path: Optional[str] = None
 
 
-class SettingsDialog(wx.Dialog):
-    """Settings dialog allowing tesseract executable configuration.
+state = AppState()
+app = Flask(__name__)
 
-    The dialog is DPI-safe, resizable, and scrollable.
-    """
 
-    def __init__(
-        self,
-        parent: wx.Window,
-        tesseract_path: Optional[str],
-        fullscreen_enabled: bool,
-    ):
-        super().__init__(parent, title="Settings", style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+# ---------- Dependency handling ----------
 
-        # Scrolled content region for settings fields.
-        scroller = wx.ScrolledWindow(self, style=wx.TAB_TRAVERSAL)
-        scroller.SetScrollRate(10, 10)
+def _detect_dependency_state() -> Dict[str, bool]:
+    return {
+        "pygetwindow": gw is not None,
+        "pyautogui": pyautogui is not None,
+        "pillow": Image is not None,
+        "pytesseract": pytesseract is not None,
+        "pywin32": _has_pywin32(),
+    }
 
-        instruction = wx.StaticText(scroller, label="Tesseract executable:")
-        self._path_ctrl = wx.TextCtrl(scroller, value=tesseract_path or "")
-        browse_btn = wx.Button(scroller, label="Browse…")
-        browse_btn.Bind(wx.EVT_BUTTON, self._browse)
 
-        self._fullscreen_checkbox = wx.CheckBox(scroller, label="Enable full screen (F11)")
-        self._fullscreen_checkbox.SetValue(fullscreen_enabled)
+def _has_pywin32() -> bool:
+    required_modules = ("win32gui", "win32ui", "win32con")
+    return all(importlib.util.find_spec(module) is not None for module in required_modules)
 
-        form_sizer = wx.FlexGridSizer(rows=1, cols=2, vgap=10, hgap=10)
-        form_sizer.AddGrowableCol(1, 1)
-        form_sizer.Add(instruction, 0, wx.ALIGN_CENTER_VERTICAL)
-        form_sizer.Add(self._path_ctrl, 1, wx.EXPAND)
 
-        browse_row = wx.BoxSizer(wx.HORIZONTAL)
-        browse_row.AddStretchSpacer(1)
-        browse_row.Add(browse_btn, 0)
+def _detect_local_tesseract() -> Optional[str]:
+    repo_root = Path(__file__).resolve().parent.parent
+    candidates = [repo_root / ".tesseract" / "tesseract.exe"]
 
-        content_sizer = wx.BoxSizer(wx.VERTICAL)
-        content_sizer.Add(form_sizer, 0, wx.EXPAND | wx.ALL, 12)
-        content_sizer.Add(self._fullscreen_checkbox, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 12)
-        content_sizer.Add(browse_row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
+    program_files = os.environ.get("PROGRAMFILES")
+    if program_files:
+        candidates.append(Path(program_files) / "Tesseract-OCR" / "tesseract.exe")
 
-        scroller.SetSizer(content_sizer)
-        content_sizer.Fit(scroller)
-        scroller.FitInside()
+    program_files_x86 = os.environ.get("PROGRAMFILES(X86)")
+    if program_files_x86:
+        candidates.append(Path(program_files_x86) / "Tesseract-OCR" / "tesseract.exe")
 
-        # IMPORTANT: buttons must be parented to the dialog, and placed outside the scroller.
-        btn_sizer = self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL)
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
 
-        outer = wx.BoxSizer(wx.VERTICAL)
-        outer.Add(scroller, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 12)
-        if btn_sizer:
-            outer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 12)
 
-        self.SetSizer(outer)
+def _apply_tesseract_path() -> None:
+    if pytesseract and state.tesseract_path:
+        pytesseract.pytesseract.tesseract_cmd = state.tesseract_path
 
-        self.SetMinSize(self.FromDIP((560, 240)))
-        self.SetSize(self.FromDIP((680, 280)))
-        self.Layout()
-        self.CentreOnParent()
 
-    def _browse(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
-        with wx.FileDialog(
-            self,
-            message="Select tesseract.exe",
-            wildcard="Executable (*.exe)|*.exe|All files (*.*)|*.*",
-            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
-        ) as dialog:
-            if dialog.ShowModal() == wx.ID_OK:
-                self._path_ctrl.SetValue(dialog.GetPath())
+def _ensure_dependency(key: str, friendly_name: str) -> Optional[str]:
+    """Return an error message if a dependency is missing; otherwise None."""
 
-    @property
-    def tesseract_path(self) -> Optional[str]:
-        text = self._path_ctrl.GetValue().strip()
-        return text or None
-
-    @property
-    def fullscreen_enabled(self) -> bool:
-        return self._fullscreen_checkbox.GetValue()
-
-
-class WindowSelectionDialog(wx.Dialog):
-    """Dialog that lists current top-level windows for selection."""
-
-    def __init__(self, parent: wx.Window):
-        super().__init__(parent, title="Select a window to capture", style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
-
-        self._list_box = wx.ListBox(self)
-        refresh_btn = wx.Button(self, label="Refresh")
-        refresh_btn.Bind(wx.EVT_BUTTON, self._populate_windows)
-
-        btn_sizer = self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL)
-
-        # Touch/DPI friendly sizing.
-        button_min = self.FromDIP((140, 52))
-        refresh_btn.SetMinSize(button_min)
-
-        main_sizer = wx.BoxSizer(wx.VERTICAL)
-        main_sizer.Add(self._list_box, 1, wx.ALL | wx.EXPAND, 12)
-        main_sizer.Add(refresh_btn, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.ALIGN_RIGHT, 12)
-        if btn_sizer:
-            main_sizer.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, 12)
-
-        self.SetSizer(main_sizer)
-        self.SetMinSize(self.FromDIP((520, 420)))
-        self.SetSize(self.FromDIP((620, 520)))
-        self._populate_windows()
-
-    def _populate_windows(self, event: Optional[wx.CommandEvent] = None) -> None:
-        self._list_box.Clear()
-        if gw is None:
-            wx.MessageBox("Install pygetwindow to list windows.", "pygetwindow missing", wx.ICON_WARNING | wx.OK, parent=self)
-            return
-
-        titles: List[str] = [title for title in gw.getAllTitles() if title.strip()]
-        titles.sort()
-        self._list_box.InsertItems(titles, 0)
-
-    def selected_title(self) -> Optional[str]:
-        selection = self._list_box.GetSelection()
-        if selection == wx.NOT_FOUND:
-            return None
-        return self._list_box.GetString(selection)
-
-    def get_selection(self) -> Optional[SelectedWindow]:
-        if self.ShowModal() != wx.ID_OK:
-            return None
-        title = self.selected_title()
-        if not title or gw is None:
-            return None
-        window = gw.getWindowsWithTitle(title)[0]
-        return SelectedWindow(
-            title=title,
-            left=window.left,
-            top=window.top,
-            width=window.width,
-            height=window.height,
-            hwnd=getattr(window, "_hWnd", None),
-        )
-
-
-class CaptureCanvas(wx.Panel):
-    """Preview canvas with optional crop-rectangle selection.
-
-    The displayed bitmap is scaled for preview, but crop coordinates are mapped
-    back to the original image resolution so OCR can run on original pixels.
-    """
-
-    def __init__(
-        self,
-        parent: wx.Window,
-        on_crop_changed: Optional[Callable[[Optional[Tuple[int, int, int, int]]], None]] = None,
-    ):
-        super().__init__(parent)
-
-        self.SetBackgroundColour(wx.Colour(245, 245, 245))
-
-        self._orig_pil: Optional["Image.Image"] = None
-        self._orig_bmp: Optional[wx.Bitmap] = None
-
-        # Display-scaled bitmap and mapping parameters.
-        self._display_bmp: Optional[wx.Bitmap] = None
-        self._display_rect: wx.Rect = wx.Rect(0, 0, 0, 0)
-        self._scale: float = 1.0
-
-        # Crop selection state in original-image coordinates.
-        self._crop_box: Optional[Tuple[int, int, int, int]] = None  # (l, t, r, b)
-        self._crop_mode: bool = False
-        self._dragging: bool = False
-        self._drag_start_img: Optional[Tuple[float, float]] = None
-        self._drag_curr_img: Optional[Tuple[float, float]] = None
-
-        self._on_crop_changed = on_crop_changed
-
-        self.Bind(wx.EVT_PAINT, self._on_paint)
-        self.Bind(wx.EVT_SIZE, self._on_size)
-        self.Bind(wx.EVT_LEFT_DOWN, self._on_left_down)
-        self.Bind(wx.EVT_MOTION, self._on_motion)
-        self.Bind(wx.EVT_LEFT_UP, self._on_left_up)
-
-    def has_image(self) -> bool:
-        return self._orig_pil is not None
-
-    def set_image(self, pil_image: "Image.Image") -> None:
-        self._orig_pil = pil_image
-        self._orig_bmp = pil_to_bitmap(pil_image)
-        self.clear_crop()
-        self._refresh_scaled_bitmap()
-        self.Refresh()
-
-    def clear_image(self) -> None:
-        self._orig_pil = None
-        self._orig_bmp = None
-        self._display_bmp = None
-        self._display_rect = wx.Rect(0, 0, 0, 0)
-        self._scale = 1.0
-        self.clear_crop()
-        self._crop_mode = False
-        self.Refresh()
-
-    def set_crop_mode(self, enabled: bool) -> None:
-        self._crop_mode = enabled
-        if not enabled:
-            self._dragging = False
-            self._drag_start_img = None
-            self._drag_curr_img = None
-        self.Refresh()
-
-    def crop_mode(self) -> bool:
-        return self._crop_mode
-
-    def clear_crop(self) -> None:
-        self._crop_box = None
-        self._dragging = False
-        self._drag_start_img = None
-        self._drag_curr_img = None
-        if self._on_crop_changed:
-            self._on_crop_changed(None)
-        self.Refresh()
-
-    def get_crop_box(self) -> Optional[Tuple[int, int, int, int]]:
-        return self._crop_box
-
-    def _on_size(self, event: wx.SizeEvent) -> None:
-        self._refresh_scaled_bitmap()
-        event.Skip()
-
-    def _refresh_scaled_bitmap(self) -> None:
-        if self._orig_bmp is None:
-            self._display_bmp = None
-            self._display_rect = wx.Rect(0, 0, 0, 0)
-            self._scale = 1.0
-            return
-
-        client = self.GetClientSize()
-        if client.width <= 2 or client.height <= 2:
-            return
-
-        img = self._orig_bmp.ConvertToImage()
-        iw, ih = img.GetSize()
-        if iw <= 0 or ih <= 0:
-            return
-
-        scale = min(client.width / iw, client.height / ih)
-
-        dw = max(1, int(iw * scale))
-        dh = max(1, int(ih * scale))
-
-        x = (client.width - dw) // 2
-        y = (client.height - dh) // 2
-
-        scaled = img.Scale(dw, dh, wx.IMAGE_QUALITY_HIGH)
-        self._display_bmp = wx.Bitmap(scaled)
-        self._display_rect = wx.Rect(x, y, dw, dh)
-        self._scale = scale
-
-    def _client_to_image(self, pt: wx.Point) -> Optional[Tuple[float, float]]:
-        if self._orig_pil is None or self._display_bmp is None:
-            return None
-        if not self._display_rect.Contains(pt):
-            return None
-
-        ix = (pt.x - self._display_rect.x) / self._scale
-        iy = (pt.y - self._display_rect.y) / self._scale
-
-        # Clamp to image bounds.
-        w, h = self._orig_pil.size
-        ix = min(max(ix, 0.0), float(w))
-        iy = min(max(iy, 0.0), float(h))
-        return ix, iy
-
-    def _image_to_client(self, ix: float, iy: float) -> wx.Point:
-        cx = int(self._display_rect.x + ix * self._scale)
-        cy = int(self._display_rect.y + iy * self._scale)
-        return wx.Point(cx, cy)
-
-    def _current_drag_box_client(self) -> Optional[wx.Rect]:
-        if self._orig_pil is None:
-            return None
-
-        if self._drag_start_img and self._drag_curr_img:
-            x1, y1 = self._drag_start_img
-            x2, y2 = self._drag_curr_img
-        elif self._crop_box:
-            l, t, r, b = self._crop_box
-            x1, y1, x2, y2 = float(l), float(t), float(r), float(b)
-        else:
-            return None
-
-        p1 = self._image_to_client(x1, y1)
-        p2 = self._image_to_client(x2, y2)
-        left = min(p1.x, p2.x)
-        top = min(p1.y, p2.y)
-        right = max(p1.x, p2.x)
-        bottom = max(p1.y, p2.y)
-        return wx.Rect(left, top, max(1, right - left), max(1, bottom - top))
-
-    def _on_left_down(self, event: wx.MouseEvent) -> None:
-        if not self._crop_mode or self._orig_pil is None:
-            return
-        img_pt = self._client_to_image(event.GetPosition())
-        if img_pt is None:
-            return
-        self._dragging = True
-        self._drag_start_img = img_pt
-        self._drag_curr_img = img_pt
-        self.CaptureMouse()
-        self.Refresh()
-
-    def _on_motion(self, event: wx.MouseEvent) -> None:
-        if not self._dragging or not self._crop_mode or self._orig_pil is None:
-            return
-        if not event.Dragging() or not event.LeftIsDown():
-            return
-        img_pt = self._client_to_image(event.GetPosition())
-        if img_pt is None:
-            return
-        self._drag_curr_img = img_pt
-        self.Refresh()
-
-    def _on_left_up(self, event: wx.MouseEvent) -> None:
-        if not self._dragging or self._orig_pil is None:
-            return
-
-        if self.HasCapture():
-            self.ReleaseMouse()
-
-        self._dragging = False
-        end_pt = self._client_to_image(event.GetPosition())
-        if end_pt is None:
-            self._drag_start_img = None
-            self._drag_curr_img = None
-            self.Refresh()
-            return
-
-        if self._drag_start_img is None:
-            return
-
-        x1, y1 = self._drag_start_img
-        x2, y2 = end_pt
-
-        left = int(min(x1, x2))
-        top = int(min(y1, y2))
-        right = int(max(x1, x2))
-        bottom = int(max(y1, y2))
-
-        # Enforce a minimal crop area.
-        if right - left < 10 or bottom - top < 10:
-            self._crop_box = None
-            if self._on_crop_changed:
-                self._on_crop_changed(None)
-        else:
-            w, h = self._orig_pil.size
-            left = max(0, min(left, w - 1))
-            top = max(0, min(top, h - 1))
-            right = max(left + 1, min(right, w))
-            bottom = max(top + 1, min(bottom, h))
-            self._crop_box = (left, top, right, bottom)
-            if self._on_crop_changed:
-                self._on_crop_changed(self._crop_box)
-
-        self._drag_start_img = None
-        self._drag_curr_img = None
-        # Exit crop mode after a selection to keep the workflow simple.
-        self._crop_mode = False
-        self.Refresh()
-
-    def _on_paint(self, event: wx.PaintEvent) -> None:
-        dc = wx.BufferedPaintDC(self)
-        dc.Clear()
-
-        # Frame border.
-        client = self.GetClientRect()
-        dc.SetPen(wx.Pen(wx.Colour(210, 210, 210), 1))
-        dc.SetBrush(wx.Brush(self.GetBackgroundColour()))
-        dc.DrawRectangle(client)
-
-        if self._display_bmp is None:
-            dc.SetTextForeground(wx.Colour(110, 110, 110))
-            msg = "Preview will appear here after you take a capture."
-            tw, th = dc.GetTextExtent(msg)
-            dc.DrawText(msg, (client.width - tw) // 2, (client.height - th) // 2)
-            return
-
-        # Draw image.
-        dc.DrawBitmap(self._display_bmp, self._display_rect.x, self._display_rect.y, True)
-
-        # Draw crop rectangle (existing or in-progress).
-        crop_rect = self._current_drag_box_client()
-        if crop_rect:
-            # Thicker pen for touchscreen visibility.
-            dc.SetPen(wx.Pen(wx.Colour(0, 120, 215), self.FromDIP(3), style=wx.PENSTYLE_SHORT_DASH))
-            dc.SetBrush(wx.Brush(wx.Colour(0, 120, 215, 40)))
-            dc.DrawRectangle(crop_rect)
-
-
-class OCRFrame(wx.Frame):
-    def __init__(self):
-        super().__init__(None, title="AI Agent - Window Capture & OCR", size=(1200, 760))
-
-        self._selected_window: Optional[SelectedWindow] = None
-        self._captured_image: Optional["Image.Image"] = None
-        self._tesseract_path: Optional[str] = self._detect_local_tesseract()
-        self._dependency_state: Dict[str, bool] = {}
-        self._install_attempted = False
-
-        self._crop_box: Optional[Tuple[int, int, int, int]] = None
-        self._is_fullscreen: bool = False
-
-        # Adjust these to change preview:output ratio.
-        # 0.55 means left preview gets 55% of splitter width.
-        self._split_ratio_windowed: float = 0.45
-        self._split_ratio_fullscreen: float = 0.58
-
-        self._button_base_size = self.FromDIP((170, 64))
-        self._button_base_font: Optional[wx.Font] = None  # captured once buttons are created.
-        self._action_buttons: List[wx.Button] = []
-        self._header_base_font: Optional[wx.Font] = None
-        self._selected_label_base_font: Optional[wx.Font] = None
-
-        # Controls layout state.
-        self._controls_panel: Optional[wx.Panel] = None
-        self._controls_cols: Optional[int] = None
-
-        # Splitter handle.
-        self._splitter: Optional[wx.SplitterWindow] = None
-
-        self._build_ui()
-        self._apply_tesseract_path()
-        self._check_dependencies()
-
-        # Keyboard shortcuts for full screen.
-        self.Bind(wx.EVT_CHAR_HOOK, self._on_key_press)
-        self.Bind(wx.EVT_CLOSE, self._on_close)
-
-    # ---------- UI ----------
-
-    def _build_ui(self) -> None:
-        self.CreateStatusBar(number=1)
-        self.SetStatusText("Ready.")
-        info_panel = wx.Panel(self)
-
-        self._header = wx.StaticText(
-            info_panel,
-            label=(
-                "Workflow: Select a window → Take a capture → (Optional) Crop → OCR.\n"
-                "OCR runs locally via Tesseract."
-            ),
-        )
-
-        self._selected_label = wx.StaticText(info_panel, label="Selected window: (none)")
-        self._selected_label.SetForegroundColour(wx.Colour(80, 80, 80))
-        self._header_base_font = self._header.GetFont()
-        self._selected_label_base_font = self._selected_label.GetFont()
-
-        info_sizer = wx.BoxSizer(wx.VERTICAL)
-        info_sizer.Add(self._header, 0, wx.EXPAND | wx.BOTTOM, self.FromDIP(6))
-        info_sizer.Add(self._selected_label, 0, wx.EXPAND)
-
-        info_panel.SetSizer(info_sizer)
-
-        # Main split area: preview (left) and OCR output (right).
-        splitter = wx.SplitterWindow(self, style=wx.SP_LIVE_UPDATE | wx.SP_3D)
-        self._splitter = splitter
-
-        left_panel = wx.Panel(splitter)
-        right_panel = wx.Panel(splitter)
-
-        self._canvas = CaptureCanvas(left_panel, on_crop_changed=self._on_crop_changed)
-
-        left_box = wx.StaticBoxSizer(wx.StaticBox(left_panel, label="Capture Preview"), wx.VERTICAL)
-        left_box.Add(self._canvas, 1, wx.EXPAND | wx.ALL, self.FromDIP(8))
-        left_panel.SetSizer(left_box)
-
-        self._ocr_output = wx.TextCtrl(
-            right_panel,
-            style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2,
-        )
-        right_box = wx.StaticBoxSizer(wx.StaticBox(right_panel, label="OCR Output"), wx.VERTICAL)
-        right_box.Add(self._ocr_output, 1, wx.EXPAND | wx.ALL, self.FromDIP(8))
-        right_panel.SetSizer(right_box)
-
-        # Initial split; final ratio is applied via _apply_split_ratio().
-        splitter.SplitVertically(left_panel, right_panel, sashPosition=self.FromDIP(440))
-        splitter.SetMinimumPaneSize(self.FromDIP(260))
-
-        # Controls panel: buttons fill width; reflow into rows when narrow.
-        controls_panel = wx.Panel(self)
-        self._controls_panel = controls_panel
-
-        self._start_btn = self._make_action_button(controls_panel, "Select Window")
-        self._start_btn.Bind(wx.EVT_BUTTON, self._select_window)
-
-        self._take_btn = self._make_action_button(controls_panel, "Take")
-        self._take_btn.Disable()
-        self._take_btn.Bind(wx.EVT_BUTTON, self._take_capture)
-
-        self._crop_btn = self._make_action_button(controls_panel, "Crop")
-        self._crop_btn.Disable()
-        self._crop_btn.Bind(wx.EVT_BUTTON, self._toggle_crop)
-
-        self._process_btn = self._make_action_button(controls_panel, "OCR")
-        self._process_btn.Disable()
-        self._process_btn.Bind(wx.EVT_BUTTON, self._process_capture)
-
-        self._settings_btn = self._make_action_button(controls_panel, "Settings")
-        self._settings_btn.Bind(wx.EVT_BUTTON, self._open_settings)
-
-        for btn in (self._start_btn, self._take_btn, self._crop_btn, self._process_btn, self._settings_btn):
-            self._action_buttons.append(btn)
-            if self._button_base_font is None:
-                self._button_base_font = btn.GetFont()
-
-        # Temporary; real sizer is created by _relayout_controls().
-        controls_panel.SetSizer(wx.BoxSizer(wx.HORIZONTAL))
-
-        main = wx.BoxSizer(wx.VERTICAL)
-        main.Add(info_panel, 0, wx.EXPAND | wx.ALL, self.FromDIP(12))
-        main.Add(splitter, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, self.FromDIP(12))
-        main.Add(controls_panel, 0, wx.EXPAND | wx.ALL, self.FromDIP(12))
-
-        self.SetSizer(main)
-
-        # Apply initial scaling + split ratio + controls layout.
-        self._apply_touch_scaling(self._is_fullscreen)
-        self._apply_split_ratio(self._split_ratio_windowed)
-        self._relayout_controls(force=True)
-
-        # Dynamic wrap for header + responsive controls layout.
-        self.Bind(wx.EVT_SIZE, self._on_frame_size)
-
-    def _on_frame_size(self, event: wx.SizeEvent) -> None:
-        try:
-            width = max(200, self.GetClientSize().width - self.FromDIP(40))
-            self._header.Wrap(width)
-        except Exception:
-            pass
-
-        self._relayout_controls()
-        event.Skip()
-
-    def _on_key_press(self, event: wx.KeyEvent) -> None:
-        if event.GetKeyCode() == wx.WXK_F11:
-            self._toggle_fullscreen()
-            return
-        event.Skip()
-
-    def _make_action_button(self, parent: wx.Window, label: str) -> wx.Button:
-        btn = wx.Button(parent, label=label)
-        font = btn.GetFont()
-        font.SetPointSize(max(font.GetPointSize(), 11))
-        font.SetWeight(wx.FONTWEIGHT_SEMIBOLD)
-        btn.SetFont(font)
-        btn.SetMinSize(self._scaled_button_size())
-        return btn
-
-    def _scaled_button_size(self) -> wx.Size:
-        factor = 1.3 if self._is_fullscreen else 1.0
-        return wx.Size(int(self._button_base_size.width * factor), int(self._button_base_size.height * factor))
-
-    def _apply_touch_scaling(self, fullscreen: bool) -> None:
-        if not self._action_buttons:
-            return
-
-        factor = 1.3 if fullscreen else 1.0
-        font_factor = 1.2 if fullscreen else 1.0
-
-        for btn in self._action_buttons:
-            btn.SetMinSize(wx.Size(int(self._button_base_size.width * factor), int(self._button_base_size.height * factor)))
-            base_font = self._button_base_font or btn.GetFont()
-            font = base_font.Bold()
-            base_size = base_font.GetPointSize()
-            font.SetPointSize(int(round(base_size * font_factor)))
-            btn.SetFont(font)
-
-        # Slightly bump header and label text for readability in full screen.
-        for label in (self._header, self._selected_label):
-            font = label.GetFont()
-            if label is self._header and self._header_base_font:
-                base_size = self._header_base_font.GetPointSize()
-            elif label is self._selected_label and self._selected_label_base_font:
-                base_size = self._selected_label_base_font.GetPointSize()
-            else:
-                base_size = font.GetPointSize()
-            font.SetPointSize(int(round(base_size * font_factor)))
-            label.SetFont(font)
-
-        self._relayout_controls(force=True)
-        self.Layout()
-
-    def _apply_split_ratio(self, ratio: float) -> None:
-        """Apply splitter ratio for left (preview) vs right (OCR) panes."""
-        if self._splitter is None:
-            return
-        ratio = max(0.10, min(0.90, float(ratio)))
-        self._splitter.SetSashGravity(ratio)
-        w = max(1, self.GetClientSize().width)
-        self._splitter.SetSashPosition(int(w * ratio))
-
-    def _controls_target_columns(self, width: int) -> int:
-        """Compute how many button columns can fit, while keeping buttons touch-friendly."""
-        if not self._action_buttons:
-            return 1
-
-        # Include internal grid gaps when estimating.
-        gap = self.FromDIP(10)
-        min_btn_w = self._scaled_button_size().width
-        estimated_cell_w = min_btn_w + gap
-
-        max_cols = max(1, width // max(1, estimated_cell_w))
-        return max(1, min(len(self._action_buttons), max_cols))
-
-    def _relayout_controls(self, force: bool = False) -> None:
-        """Make bottom buttons fill full width; reflow into multiple rows when narrow."""
-        if self._controls_panel is None or not self._action_buttons:
-            return
-
-        panel = self._controls_panel
-        width = max(1, panel.GetClientSize().width)
-        cols = self._controls_target_columns(width)
-        if (not force) and (self._controls_cols == cols):
-            return
-
-        self._controls_cols = cols
-        rows = int(ceil(len(self._action_buttons) / cols))
-
-        gap = self.FromDIP(10)
-        grid = wx.GridSizer(rows=rows, cols=cols, vgap=gap, hgap=gap)
-
-        # Detach any previous sizer to avoid orphaned children in the old layout.
-        panel.SetSizer(None)
-
-        for btn in self._action_buttons:
-            grid.Add(btn, 0, wx.EXPAND)
-
-        panel.SetSizer(grid)
-        panel.Layout()
-
-    def _toggle_fullscreen(self, target_state: Optional[bool] = None) -> None:
-        desired = (not self._is_fullscreen) if target_state is None else target_state
-        if desired == self._is_fullscreen:
-            return
-
-        self._is_fullscreen = desired
-        self.ShowFullScreen(desired, style=wx.FULLSCREEN_ALL)
-        self._apply_touch_scaling(desired)
-
-        # Apply different splitter ratio in fullscreen if desired.
-        ratio = self._split_ratio_fullscreen if desired else self._split_ratio_windowed
-        self._apply_split_ratio(ratio)
-
-        message = "Full screen enabled. Press F11 or use Settings to exit." if desired else "Exited full screen."
-        self._set_status(message)
-
-    def _set_status(self, message: str) -> None:
-        self.SetStatusText(message)
-
-    # ---------- Dependency / configuration ----------
-
-    def _check_dependencies(self) -> None:
-        """Detect missing modules early and give a single actionable message."""
-        self._dependency_state = self._detect_dependency_state()
-
-        missing = [name for name, ok in self._dependency_state.items() if not ok]
-        if missing:
-            if self._attempt_install_requirements():
-                self._dependency_state = self._detect_dependency_state()
-                missing = [name for name, ok in self._dependency_state.items() if not ok]
-
-        if missing:
-            message = (
-                "The following Python packages are required but not available:\n"
-                + "\n".join(f" • {name}" for name in missing)
-                + "\n\nTried installing them automatically but some are still missing."
-            )
-            wx.MessageBox(message, "Missing dependencies", wx.ICON_ERROR | wx.OK, parent=self)
-
-        self._start_btn.Enable(self._dependency_state.get("pygetwindow", False))
-        if not self._dependency_state.get("pygetwindow", False):
-            self._set_status("Install pygetwindow to enable window selection.")
-
-    def _detect_dependency_state(self) -> Dict[str, bool]:
-        return {
-            "pygetwindow": gw is not None,
-            "pyautogui": pyautogui is not None,
-            "pillow": Image is not None,
-            "pytesseract": pytesseract is not None,
-            "pywin32": self._has_pywin32(),
-        }
-
-    def _has_pywin32(self) -> bool:
-        required_modules = ("win32gui", "win32ui", "win32con")
-        return all(importlib.util.find_spec(module) is not None for module in required_modules)
-
-    def _detect_local_tesseract(self) -> Optional[str]:
-        repo_root = Path(__file__).resolve().parent.parent
-        candidates = [repo_root / ".tesseract" / "tesseract.exe"]
-
-        program_files = os.environ.get("PROGRAMFILES")
-        if program_files:
-            candidates.append(Path(program_files) / "Tesseract-OCR" / "tesseract.exe")
-
-        program_files_x86 = os.environ.get("PROGRAMFILES(X86)")
-        if program_files_x86:
-            candidates.append(Path(program_files_x86) / "Tesseract-OCR" / "tesseract.exe")
-
-        for candidate in candidates:
-            if candidate.exists():
-                return str(candidate)
+    missing = _detect_dependency_state()
+    if missing.get(key, False):
         return None
 
-    def _apply_tesseract_path(self) -> None:
-        if pytesseract and self._tesseract_path:
-            pytesseract.pytesseract.tesseract_cmd = self._tesseract_path
+    if _attempt_install_requirements():
+        missing = _detect_dependency_state()
+        if missing.get(key, False):
+            return None
 
-    def _ensure_dependency(self, key: str, friendly_name: str) -> bool:
-        """Show a clear message if the dependency is missing and stop the action."""
-        if self._dependency_state.get(key, False):
-            return True
+    return (
+        f"{friendly_name} is not installed. Please run: pip install -r requirements.txt"
+    )
 
-        if self._attempt_install_requirements():
-            self._dependency_state = self._detect_dependency_state()
-            if self._dependency_state.get(key, False):
-                return True
 
-        wx.MessageBox(
-            f"{friendly_name} is not installed. Please run: pip install -r requirements.txt",
-            "Missing dependency",
-            wx.ICON_ERROR | wx.OK,
-            parent=self,
-        )
+def _attempt_install_requirements() -> bool:
+    requirements_path = Path(__file__).resolve().parent.parent / "requirements.txt"
+    if not requirements_path.exists():
         return False
 
-    def _attempt_install_requirements(self) -> bool:
-        if self._install_attempted:
-            return False
-
-        self._install_attempted = True
-        if not self._install_requirements():
-            return False
-
-        self._refresh_optional_dependencies()
-        wx.MessageBox(
-            "Required packages were installed. Please retry your action.",
-            "Dependencies installed",
-            wx.ICON_INFORMATION | wx.OK,
-            parent=self,
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", str(requirements_path)],
+            check=True,
+            capture_output=True,
+            text=True,
         )
-        return True
+    except subprocess.CalledProcessError:
+        return False
 
-    def _install_requirements(self) -> bool:
-        requirements_path = Path(__file__).resolve().parent.parent / "requirements.txt"
-        if not requirements_path.exists():
-            wx.MessageBox(
-                f"Could not find requirements file at {requirements_path}.",
-                "Missing requirements.txt",
-                wx.ICON_ERROR | wx.OK,
-                parent=self,
-            )
-            return False
+    _refresh_optional_dependencies()
+    return True
 
+
+def _refresh_optional_dependencies() -> None:
+    global gw, pyautogui, pytesseract, Image
+
+    if gw is None:
         try:
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-r", str(requirements_path)],
-                check=True,
-                capture_output=True,
-                text=True,
+            gw = importlib.import_module("pygetwindow")
+        except Exception:  # pragma: no cover
+            gw = None
+    if pyautogui is None:
+        try:
+            pyautogui = importlib.import_module("pyautogui")
+        except Exception:  # pragma: no cover
+            pyautogui = None
+    if pytesseract is None:
+        try:
+            pytesseract = importlib.import_module("pytesseract")
+        except Exception:  # pragma: no cover
+            pytesseract = None
+    if Image is None:
+        try:
+            from PIL import Image as PilImage
+
+            Image = PilImage
+        except Exception:  # pragma: no cover
+            Image = None
+
+
+# ---------- Window helpers ----------
+
+def _list_windows() -> List[SelectedWindow]:
+    if gw is None:
+        return []
+    titles: List[str] = [title for title in gw.getAllTitles() if title.strip()]
+    titles.sort()
+    windows: List[SelectedWindow] = []
+    for title in titles:
+        window = gw.getWindowsWithTitle(title)[0]
+        windows.append(
+            SelectedWindow(
+                title=title,
+                left=window.left,
+                top=window.top,
+                width=window.width,
+                height=window.height,
+                hwnd=getattr(window, "_hWnd", None),
             )
-        except subprocess.CalledProcessError as exc:
-            details = exc.stderr or exc.stdout or "Unknown error"
-            wx.MessageBox(
-                f"pip install failed with:\n{details}",
-                "Dependency installation failed",
-                wx.ICON_ERROR | wx.OK,
-                parent=self,
-            )
-            return False
+        )
+    return windows
 
-        return True
 
-    def _refresh_optional_dependencies(self) -> None:
-        global gw, pyautogui, pytesseract, Image
+def _capture_selected_window(selection: SelectedWindow) -> Optional["Image.Image"]:
+    if not selection:
+        return None
+    if Image is None:
+        raise RuntimeError("Install Pillow to capture windows.")
 
-        if gw is None:
-            try:
-                gw = importlib.import_module("pygetwindow")
-            except Exception:  # pragma: no cover
-                gw = None
-        if pyautogui is None:
-            try:
-                pyautogui = importlib.import_module("pyautogui")
-            except Exception:  # pragma: no cover
-                pyautogui = None
-        if pytesseract is None:
-            try:
-                pytesseract = importlib.import_module("pytesseract")
-            except Exception:  # pragma: no cover
-                pytesseract = None
-        if Image is None:
-            try:
-                from PIL import Image as PilImage
+    if selection.hwnd:
+        try:
+            win32_image = _capture_hwnd(selection.hwnd, selection.width, selection.height)
+            if win32_image:
+                return win32_image
+        except Exception:
+            # Fall through to pyautogui
+            pass
 
-                Image = PilImage
-            except Exception:  # pragma: no cover
-                Image = None
+    if pyautogui is None:
+        raise RuntimeError("Install pyautogui to capture windows without Win32 support.")
 
-    # ---------- Actions ----------
+    left, top, width, height = selection.region
+    screenshot = pyautogui.screenshot(region=(left, top, width, height))
+    return screenshot
 
-    def _open_settings(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
-        dialog = SettingsDialog(self, self._tesseract_path, self._is_fullscreen)
-        if dialog.ShowModal() == wx.ID_OK:
-            self._tesseract_path = dialog.tesseract_path
-            self._apply_tesseract_path()
-            status_msg = "Settings saved."
-            if dialog.fullscreen_enabled != self._is_fullscreen:
-                self._toggle_fullscreen(dialog.fullscreen_enabled)
-                status_msg = "Settings saved. Full screen enabled." if dialog.fullscreen_enabled else "Settings saved. Full screen disabled."
-            self._set_status(status_msg)
-        dialog.Destroy()
 
-    def _select_window(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
-        if not self._ensure_dependency("pygetwindow", "pygetwindow"):
-            return
+def _capture_hwnd(hwnd: int, width: int, height: int) -> Optional["Image.Image"]:
+    if not _has_pywin32():
+        return None
 
-        dialog = WindowSelectionDialog(self)
-        selection = dialog.get_selection()
-        dialog.Destroy()
+    import win32con  # type: ignore
+    import win32gui  # type: ignore
+    import win32ui  # type: ignore
 
-        if not selection:
-            return
+    hwnd_dc = win32gui.GetWindowDC(hwnd)
+    if not hwnd_dc:
+        return None
 
-        self._selected_window = selection
-        self._selected_label.SetLabel(f"Selected window: {selection.title}")
-        self._take_btn.Enable()
-
-        # Reset capture-related state.
-        self._captured_image = None
-        self._canvas.clear_image()
-        self._crop_btn.SetLabel("Crop")
-        self._crop_btn.Disable()
-        self._process_btn.Disable()
-        self._ocr_output.SetValue("")
-        self._set_status("Window selected. Tap 'Take' to capture.")
-
-    def _capture_selected_window(self) -> Optional["Image.Image"]:
-        if self._selected_window is None:
-            return None
-        if not self._ensure_dependency("pillow", "Pillow"):
-            return None
-
-        # Prefer Win32 capture when possible for better fidelity and no screen overlay issues.
-        if sys.platform == "win32" and self._selected_window.hwnd and self._ensure_dependency("pywin32", "pywin32"):
-            win32_capture = self._capture_with_win32(self._selected_window)
-            if win32_capture is not None:
-                return win32_capture
-
-        if not self._ensure_dependency("pyautogui", "pyautogui"):
-            return None
-        if pyautogui is None:
-            return None
-        return pyautogui.screenshot(region=self._selected_window.region)
-
-    def _capture_with_win32(self, selection: SelectedWindow) -> Optional["Image.Image"]:
-        import win32con
-        import win32gui
-        import win32ui
-
-        hwnd = selection.hwnd
-        if hwnd is None:
-            return None
-
-        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-        width, height = right - left, bottom - top
-        if width <= 0 or height <= 0:
-            return None
-
-        hwnd_dc = win32gui.GetWindowDC(hwnd)
-        if hwnd_dc == 0:
-            return None
-
+    try:
         window_dc = win32ui.CreateDCFromHandle(hwnd_dc)
         mem_dc = window_dc.CreateCompatibleDC()
         bitmap = win32ui.CreateBitmap()
         bitmap.CreateCompatibleBitmap(window_dc, width, height)
         mem_dc.SelectObject(bitmap)
 
-        def _print_window(h: int, hdc: int, flags: int) -> int:
-            if hasattr(win32gui, "PrintWindow"):
-                return int(win32gui.PrintWindow(h, hdc, flags))
-            from ctypes import windll, wintypes
+        result = win32gui.PrintWindow(hwnd, mem_dc.GetSafeHdc(), 0)
+        if result != 1:
+            return None
 
-            user32 = windll.user32
-            user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
-            user32.PrintWindow.restype = wintypes.BOOL
-            return int(user32.PrintWindow(h, hdc, flags))
-
-        try:
-            flags = int(getattr(win32con, "PW_RENDERFULLCONTENT", 0x00000002))
-            result = _print_window(hwnd, mem_dc.GetSafeHdc(), flags)
-            if result != 1 and flags != 0:
-                result = _print_window(hwnd, mem_dc.GetSafeHdc(), 0)
-            if result != 1:
-                return None
-
-            bmpinfo = bitmap.GetInfo()
-            bmpstr = bitmap.GetBitmapBits(True)
-            image = Image.frombuffer(
-                "RGB",
-                (bmpinfo["bmWidth"], bmpinfo["bmHeight"]),
-                bmpstr,
-                "raw",
-                "BGRX",
-                0,
-                1,
-            )
-            return image.crop((0, 0, width, height))
-        finally:
-            win32gui.DeleteObject(bitmap.GetHandle())
-            mem_dc.DeleteDC()
-            window_dc.DeleteDC()
-            win32gui.ReleaseDC(hwnd, hwnd_dc)
-
-    def _take_capture(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
-        if self._selected_window is None:
-            wx.MessageBox("Please select a window first.", "No window", wx.ICON_INFORMATION | wx.OK, parent=self)
-            return
-
-        try:
-            screenshot = self._capture_selected_window()
-        except Exception as exc:  # pragma: no cover - user environment specific
-            wx.MessageBox(str(exc), "Capture failed", wx.ICON_ERROR | wx.OK, parent=self)
-            return
-
-        if screenshot is None:
-            wx.MessageBox(
-                "Could not capture the selected window. Make sure it is visible and try again.",
-                "Capture failed",
-                wx.ICON_ERROR | wx.OK,
-                parent=self,
-            )
-            return
-
-        self._captured_image = screenshot
-        self._canvas.set_image(screenshot)
-
-        # Enable crop + OCR now that a capture exists.
-        self._crop_btn.Enable()
-        self._process_btn.Enable()
-
-        # Reset previous OCR/crop state.
-        self._ocr_output.SetValue("")
-        self._crop_box = None
-        self._crop_btn.SetLabel("Crop")
-
-        # No popup here per requirements; update status only.
-        self._set_status("Capture ready. Optional: tap 'Crop' then drag a rectangle; then tap 'OCR'.")
-
-    def _toggle_crop(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
-        if self._captured_image is None or not self._canvas.has_image():
-            return
-
-        # If crop mode is active, pressing again cancels crop mode.
-        if self._canvas.crop_mode():
-            self._canvas.set_crop_mode(False)
-            self._set_status("Crop mode cancelled.")
-            return
-
-        # If a crop is already set, this button clears it.
-        if self._crop_box is not None:
-            self._canvas.clear_crop()
-            self._crop_box = None
-            self._crop_btn.SetLabel("Crop")
-            self._set_status("Crop cleared. OCR will run on the full capture.")
-            return
-
-        # Otherwise enable crop mode; user drags on the preview.
-        self._canvas.set_crop_mode(True)
-        self._set_status("Crop mode enabled: drag a rectangle on the preview to select OCR region.")
-
-    def _on_crop_changed(self, crop_box: Optional[Tuple[int, int, int, int]]) -> None:
-        self._crop_box = crop_box
-        if crop_box is None:
-            self._crop_btn.SetLabel("Crop")
-            return
-        self._crop_btn.SetLabel("Clear Crop")
-        l, t, r, b = crop_box
-        self._set_status(f"Crop set: ({l}, {t}) → ({r}, {b}). Tap 'OCR' to process the cropped region.")
-
-    def _process_capture(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
-        if self._captured_image is None:
-            wx.MessageBox("Take a capture first.", "No capture", wx.ICON_INFORMATION | wx.OK, parent=self)
-            return
-        if not self._ensure_dependency("pytesseract", "pytesseract"):
-            return
-
-        # Crop must be applied to the ORIGINAL image (not the preview).
-        image_for_ocr = self._captured_image
-        if self._crop_box is not None:
-            try:
-                image_for_ocr = self._captured_image.crop(self._crop_box)
-            except Exception as exc:
-                wx.MessageBox(str(exc), "Crop failed", wx.ICON_ERROR | wx.OK, parent=self)
-                return
-
-        try:
-            text = pytesseract.image_to_string(image_for_ocr)
-        except Exception as exc:  # pragma: no cover - user environment specific
-            wx.MessageBox(str(exc), "Processing failed", wx.ICON_ERROR | wx.OK, parent=self)
-            return
-
-        self._ocr_output.SetValue(text.strip())
-        self._set_status("OCR complete.")
-
-    # ---------- Lifecycle ----------
-
-    def _on_close(self, event: wx.CloseEvent) -> None:  # pragma: no cover - UI interaction
-        reason = (
-            "AI Agent is about to quit. Any selected window, capture, crop selection, "
-            "or OCR output will be lost.\n\nDo you want to exit?"
+        bmpinfo = bitmap.GetInfo()
+        bmpstr = bitmap.GetBitmapBits(True)
+        image = Image.frombuffer(
+            "RGB",
+            (bmpinfo["bmWidth"], bmpinfo["bmHeight"]),
+            bmpstr,
+            "raw",
+            "BGRX",
+            0,
+            1,
         )
-        if wx.MessageBox(reason, "Exit", wx.ICON_QUESTION | wx.YES_NO, parent=self) == wx.YES:
-            self.Destroy()
-        else:
-            event.Veto()
-            self._set_status("Close cancelled; continuing session.")
+        return image.crop((0, 0, width, height))
+    finally:
+        win32gui.DeleteObject(bitmap.GetHandle())
+        mem_dc.DeleteDC()
+        window_dc.DeleteDC()
+        win32gui.ReleaseDC(hwnd, hwnd_dc)
+
+
+# ---------- OCR ----------
+
+def _run_ocr(image: "Image.Image") -> str:
+    if pytesseract is None:
+        raise RuntimeError("pytesseract is not installed.")
+
+    return pytesseract.image_to_string(image).strip()
+
+
+# ---------- API routes ----------
+
+
+@app.route("/api/windows")
+def api_windows() -> tuple[str, int]:
+    if message := _ensure_dependency("pygetwindow", "pygetwindow"):
+        return jsonify({"error": message}), 400
+
+    windows = _list_windows()
+    return jsonify({"windows": [w.title for w in windows]})
+
+
+@app.route("/api/settings", methods=["POST"])
+def api_settings() -> tuple[str, int]:
+    data = request.get_json(silent=True) or {}
+    path = data.get("tesseract_path")
+    state.tesseract_path = path or _detect_local_tesseract()
+    _apply_tesseract_path()
+    return jsonify({"message": "Settings saved.", "tesseract_path": state.tesseract_path})
+
+
+@app.route("/api/capture", methods=["POST"])
+def api_capture() -> tuple[str, int]:
+    if message := _ensure_dependency("pillow", "Pillow"):
+        return jsonify({"error": message}), 400
+
+    data = request.get_json(silent=True) or {}
+    title = data.get("title")
+    if not title:
+        return jsonify({"error": "No window title provided."}), 400
+
+    windows = _list_windows()
+    match = next((w for w in windows if w.title == title), None)
+    if match is None:
+        return jsonify({"error": "Window not found. Refresh the list and try again."}), 404
+
+    try:
+        screenshot = _capture_selected_window(match)
+    except Exception as exc:  # pragma: no cover - user environment specific
+        return jsonify({"error": str(exc)}), 500
+
+    if screenshot is None:
+        return jsonify({"error": "Capture failed."}), 500
+
+    state.selected_window = match
+    state.captured_image = screenshot
+    state.crop_box = None
+    return jsonify({"message": "Capture ready."})
+
+
+@app.route("/api/ocr", methods=["POST"])
+def api_ocr() -> tuple[str, int]:
+    if state.captured_image is None:
+        return jsonify({"error": "Take a capture first."}), 400
+
+    if message := _ensure_dependency("pytesseract", "pytesseract"):
+        return jsonify({"error": message}), 400
+
+    data = request.get_json(silent=True) or {}
+    crop = data.get("crop")
+
+    image_for_ocr = state.captured_image
+    if crop:
+        try:
+            l, t, r, b = [int(value) for value in (crop.get("left"), crop.get("top"), crop.get("right"), crop.get("bottom"))]
+            image_for_ocr = image_for_ocr.crop((l, t, r, b))
+            state.crop_box = (l, t, r, b)
+        except Exception as exc:
+            return jsonify({"error": f"Invalid crop: {exc}"}), 400
+    else:
+        state.crop_box = None
+
+    try:
+        text = _run_ocr(image_for_ocr)
+    except Exception as exc:  # pragma: no cover - user environment specific
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify({"text": text})
+
+
+@app.route("/image")
+def image() -> "Response":
+    if state.captured_image is None:
+        return jsonify({"error": "No capture available."}), 404
+
+    buffer = io.BytesIO()
+    state.captured_image.save(buffer, format="PNG")
+    buffer.seek(0)
+    return send_file(buffer, mimetype="image/png")
+
+
+@app.route("/")
+def index() -> str:
+    template = _PAGE_TEMPLATE
+    current_path = state.tesseract_path or ""
+    crop_box = state.crop_box
+    return render_template_string(
+        template,
+        tesseract_path=current_path,
+        crop_box=crop_box,
+        has_capture=state.captured_image is not None,
+    )
+
+
+# ---------- Page template ----------
+
+
+_PAGE_TEMPLATE = """
+<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>AI Agent - Web Capture & OCR</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: #f5f5f5; color: #222; }
+    header { background: #0a84ff; color: white; padding: 16px 24px; }
+    main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+    section { background: white; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
+    h1 { margin: 0 0 6px; }
+    h2 { margin-top: 0; }
+    button { background: #0a84ff; color: white; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+    button.secondary { background: #555; }
+    button:disabled { background: #b0c9ff; cursor: not-allowed; }
+    label { display: block; margin-bottom: 6px; font-weight: bold; }
+    input, select, textarea { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box; font-size: 14px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .col { flex: 1 1 300px; }
+    #status { margin-top: 8px; color: #0a84ff; font-weight: bold; }
+    #preview-container { position: relative; display: inline-block; }
+    #crop-overlay { position: absolute; border: 2px dashed #ff5c00; background: rgba(255, 92, 0, 0.2); display: none; pointer-events: none; }
+    #captureImage { max-width: 100%; border-radius: 8px; border: 1px solid #ddd; }
+    pre { background: #f0f0f0; padding: 12px; border-radius: 8px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AI Agent - Web Capture & OCR</h1>
+    <div>Workflow: Select a window → Capture → (Optional) Crop → OCR.</div>
+  </header>
+  <main>
+    <section>
+      <div class=\"row\">
+        <div class=\"col\">
+          <h2>Window selection</h2>
+          <label for=\"windowSelect\">Open windows</label>
+          <select id=\"windowSelect\"></select>
+          <div style=\"margin-top:8px; display:flex; gap:8px; flex-wrap: wrap;\">
+            <button id=\"refreshBtn\" type=\"button\">Refresh</button>
+            <button id=\"captureBtn\" type=\"button\">Capture</button>
+          </div>
+        </div>
+        <div class=\"col\">
+          <h2>OCR settings</h2>
+          <label for=\"tesseractPath\">Tesseract executable</label>
+          <input id=\"tesseractPath\" type=\"text\" placeholder=\"Path to tesseract.exe\" value=\"{{ tesseract_path }}\" />
+          <div style=\"margin-top:8px;\">
+            <button id=\"saveSettingsBtn\" type=\"button\">Save settings</button>
+          </div>
+        </div>
+      </div>
+      <div id=\"status\"></div>
+    </section>
+
+    <section>
+      <h2>Preview & crop</h2>
+      {% if has_capture %}
+      <div id=\"preview-container\">
+        <img id=\"captureImage\" src=\"/image\" alt=\"Capture preview\" />
+        <div id=\"crop-overlay\"></div>
+      </div>
+      {% else %}
+      <div>No capture yet. Select a window and click Capture.</div>
+      <div id=\"preview-container\" style=\"display:none;\">
+        <img id=\"captureImage\" src=\"\" alt=\"Capture preview\" />
+        <div id=\"crop-overlay\"></div>
+      </div>
+      {% endif %}
+      <div style=\"margin-top: 12px; display:flex; gap:8px; flex-wrap:wrap;\">
+        <button id=\"clearCropBtn\" type=\"button\" class=\"secondary\">Clear crop</button>
+        <button id=\"ocrBtn\" type=\"button\">Run OCR</button>
+      </div>
+      <div id=\"cropInfo\" style=\"margin-top:6px; color:#444;\"></div>
+    </section>
+
+    <section>
+      <h2>OCR output</h2>
+      <pre id=\"ocrOutput\"></pre>
+    </section>
+  </main>
+
+  <script>
+    let cropBox = null;
+    let naturalWidth = 0;
+    let naturalHeight = 0;
+
+    async function refreshWindows() {
+      const res = await fetch('/api/windows');
+      const status = document.getElementById('status');
+      if (!res.ok) {
+        const data = await res.json();
+        status.textContent = data.error || 'Unable to load windows.';
+        return;
+      }
+      const data = await res.json();
+      const select = document.getElementById('windowSelect');
+      select.innerHTML = '';
+      data.windows.forEach(title => {
+        const option = document.createElement('option');
+        option.value = title;
+        option.textContent = title;
+        select.appendChild(option);
+      });
+      status.textContent = `Found ${data.windows.length} window(s).`;
+    }
+
+    async function saveSettings() {
+      const path = document.getElementById('tesseractPath').value;
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tesseract_path: path })
+      });
+      const data = await res.json();
+      const status = document.getElementById('status');
+      status.textContent = data.message || data.error || 'Settings updated';
+    }
+
+    async function capture() {
+      const select = document.getElementById('windowSelect');
+      const title = select.value;
+      const status = document.getElementById('status');
+      if (!title) {
+        status.textContent = 'Select a window first.';
+        return;
+      }
+
+      const res = await fetch('/api/capture', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        status.textContent = data.error || 'Capture failed.';
+        return;
+      }
+
+      status.textContent = data.message || 'Capture ready.';
+      const img = document.getElementById('captureImage');
+      img.src = '/image?cache=' + Date.now();
+      img.onload = () => {
+        naturalWidth = img.naturalWidth;
+        naturalHeight = img.naturalHeight;
+      };
+      document.getElementById('preview-container').style.display = 'inline-block';
+      clearCrop();
+    }
+
+    async function runOcr() {
+      const status = document.getElementById('status');
+      const payload = cropBox ? { crop: cropBox } : {};
+      const res = await fetch('/api/ocr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        status.textContent = data.error || 'OCR failed.';
+        return;
+      }
+      status.textContent = 'OCR complete.';
+      document.getElementById('ocrOutput').textContent = data.text || '';
+    }
+
+    function clearCrop() {
+      cropBox = null;
+      document.getElementById('cropInfo').textContent = 'No crop set; OCR will use the full image.';
+      const overlay = document.getElementById('crop-overlay');
+      overlay.style.display = 'none';
+    }
+
+    function setupCropping() {
+      const img = document.getElementById('captureImage');
+      const overlay = document.getElementById('crop-overlay');
+      let start = null;
+
+      img.addEventListener('load', () => {
+        naturalWidth = img.naturalWidth;
+        naturalHeight = img.naturalHeight;
+      });
+
+      img.addEventListener('mousedown', (ev) => {
+        if (!naturalWidth || !naturalHeight) return;
+        const rect = img.getBoundingClientRect();
+        start = { x: ev.clientX - rect.left, y: ev.clientY - rect.top, rect };
+        overlay.style.display = 'block';
+        overlay.style.left = `${start.x}px`;
+        overlay.style.top = `${start.y}px`;
+        overlay.style.width = '1px';
+        overlay.style.height = '1px';
+      });
+
+      img.addEventListener('mousemove', (ev) => {
+        if (!start) return;
+        const rect = start.rect;
+        const x = ev.clientX - rect.left;
+        const y = ev.clientY - rect.top;
+        const left = Math.min(start.x, x);
+        const top = Math.min(start.y, y);
+        const width = Math.abs(x - start.x);
+        const height = Math.abs(y - start.y);
+        overlay.style.left = `${left}px`;
+        overlay.style.top = `${top}px`;
+        overlay.style.width = `${width}px`;
+        overlay.style.height = `${height}px`;
+      });
+
+      img.addEventListener('mouseup', (ev) => {
+        if (!start) return;
+        const rect = start.rect;
+        const x = ev.clientX - rect.left;
+        const y = ev.clientY - rect.top;
+        const left = Math.min(start.x, x);
+        const top = Math.min(start.y, y);
+        const width = Math.abs(x - start.x);
+        const height = Math.abs(y - start.y);
+        start = null;
+
+        if (width < 10 || height < 10) {
+          clearCrop();
+          return;
+        }
+
+        const scaleX = naturalWidth / img.clientWidth;
+        const scaleY = naturalHeight / img.clientHeight;
+        cropBox = {
+          left: Math.round(left * scaleX),
+          top: Math.round(top * scaleY),
+          right: Math.round((left + width) * scaleX),
+          bottom: Math.round((top + height) * scaleY)
+        };
+        document.getElementById('cropInfo').textContent = `Crop: (${cropBox.left}, ${cropBox.top}) → (${cropBox.right}, ${cropBox.bottom})`;
+      });
+    }
+
+    document.getElementById('refreshBtn').addEventListener('click', refreshWindows);
+    document.getElementById('captureBtn').addEventListener('click', capture);
+    document.getElementById('ocrBtn').addEventListener('click', runOcr);
+    document.getElementById('saveSettingsBtn').addEventListener('click', saveSettings);
+    document.getElementById('clearCropBtn').addEventListener('click', clearCrop);
+
+    setupCropping();
+    refreshWindows();
+    clearCrop();
+  </script>
+</body>
+</html>
+"""
+
+
+# ---------- App entry ----------
 
 
 def main() -> int:
-    app = wx.App()
-    frame = OCRFrame()
-    frame.Show()
-    app.MainLoop()
+    state.tesseract_path = _detect_local_tesseract()
+    _apply_tesseract_path()
+    app.run(host="0.0.0.0", port=6000)
     return 0
 
 
