@@ -1,6 +1,6 @@
 # AI Agent Phase 2
 
-A Windows-focused desktop utility that lets a user pick any open window, take a screenshot, and process it locally with OCR. The GUI is built with PyQt5 and relies on local tools only. Phase 2 adds a single Windows `.bat` helper to set up, update, and run the project in one place.
+A Windows-focused desktop utility that lets a user pick any open window, take a screenshot, and process it locally with OCR. The GUI is built with PyQt5 and relies on local tools only. This phase ships with a single Windows launcher, `agent.bat`, that installs everything in-place, keeps itself updated, and always starts the latest version of the app.
 
 ## Features
 - **Start/Settings hub**: initial view with Start (window selection) and Settings (Tesseract path) buttons.
@@ -11,29 +11,22 @@ A Windows-focused desktop utility that lets a user pick any open window, take a 
 ## Requirements
 - Windows 10/11
 - Python 3.10+
-- Tesseract OCR installed locally (https://github.com/tesseract-ocr/tesseract). Note the installation path (e.g., `C:\Program Files\Tesseract-OCR\tesseract.exe`).
+- Tesseract OCR installed locally (https://github.com/tesseract-ocr/tesseract). Note the installation path (e.g., `C:\\Program Files\\Tesseract-OCR\\tesseract.exe`).
 - Dependencies listed in `requirements.txt`.
 
-### One-file Windows setup (.bat)
-Use the included `windows_setup.bat` file to handle setup, updates, and running the app. The script installs everything into the
-project folder so the entire runtime stays self-contained:
+### One-file Windows setup (`agent.bat`)
+Download **only** `agent.bat` to the folder where you want the app to live, then double-click it (or run it from `cmd`). Everything happens automatically in subfolders next to the script—no prompts or extra tools required:
 
 - Private Python runtime at `.\\.python`.
 - Virtual environment and dependencies in `.venv`.
-- Tesseract OCR installed under `.\\.tesseract` and automatically used by the app if present.
+- Local Tesseract OCR install at `.\\.tesseract` (a system Tesseract install is reused if already present).
+- Project source checked out in `ai_agent\\source`.
 
-Workflow:
-1. For automatic updates, put **only** `windows_setup.bat` into an empty folder and run it. The script will clone the latest project into that folder. If you already cloned the repo with Git, place the script in the repository root (next to `app/` and `requirements.txt`).
-2. Double-click the file or run it from `cmd` with `windows_setup.bat`.
-3. Choose from the menu:
-   - **Create or refresh virtual environment**: sets up `.venv` with the correct Python interpreter.
-   - **Install/Update Python dependencies**: installs from `requirements.txt` inside `.venv`.
-   - **Update project from Git (pull)**: grabs the latest code if Git is available.
-   - **Run AI Agent**: activates `.venv` (installing dependencies if missing) and launches `app\main.py`.
-   - **Full setup (venv + deps + run)**: performs install steps and starts the app in one go.
-   - **Clean __pycache__ folders**: removes Python bytecode caches.
+Behavior:
+1. **First run**: downloads the latest code (via Git if available, otherwise a zip), installs Python, creates the virtual environment, installs dependencies, provisions Tesseract, and launches the app.
+2. **Subsequent runs**: checks for updates first. If new code is found, it updates the source, refreshes the launcher if needed, restarts itself, revalidates dependencies, and then opens the app so you always use the newest version.
 
-The script installs its own Python runtime and Tesseract locally, so no system-wide tools are required. Git is only needed for the "Update project" option. After the app launches, it automatically prefers the bundled `.tesseract\\tesseract.exe`; you can still use **Settings** to override the executable path if needed.
+Everything stays self-contained in the folder beside `agent.bat`, making the launcher the only entry point you need.
 
 ### Manual install (without the .bat helper)
 Install dependencies:
@@ -54,7 +47,6 @@ python app/main.py
 4. Use **Settings** to set the `tesseract.exe` path if it is not on `PATH`.
 
 ## Notes
-- On startup the app now performs a dependency check (PyQt5, pygetwindow, pyautogui, Pillow, pytesseract) and shows a single
-  actionable message if anything is missing—run `pip install -r requirements.txt` to resolve them.
+- On startup the app now performs a dependency check (PyQt5, pygetwindow, pyautogui, Pillow, pytesseract) and shows a single actionable message if anything is missing—run `pip install -r requirements.txt` to resolve them.
 - Screen capture relies on `pyautogui`; ensure the selected window is not minimized.
 - OCR accuracy depends on your Tesseract installation and language packs.
