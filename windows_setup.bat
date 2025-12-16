@@ -31,6 +31,8 @@ set "TESSERACT_INSTALLER_URL=https://github.com/UB-Mannheim/tesseract/releases/l
 set "TESSERACT_INSTALLER_URL_FALLBACK=https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup.exe"
 set "TESSERACT_HOME=%PROJECT_ROOT%\.tesseract"
 set "TESSERACT_EXE=%TESSERACT_HOME%\tesseract.exe"
+set "TESSERACT_DEFAULT_64=%ProgramFiles%\Tesseract-OCR\tesseract.exe"
+set "TESSERACT_DEFAULT_32=%ProgramFiles(x86)%\Tesseract-OCR\tesseract.exe"
 
 call :print_header
 
@@ -169,6 +171,12 @@ exit /b 1
 :detect_tesseract
 set "TESSERACT_CMD="
 if exist "%TESSERACT_EXE%" set "TESSERACT_CMD=%TESSERACT_EXE%"
+if not defined TESSERACT_CMD (
+    if exist "%TESSERACT_DEFAULT_64%" set "TESSERACT_CMD=%TESSERACT_DEFAULT_64%"
+)
+if not defined TESSERACT_CMD (
+    if exist "%TESSERACT_DEFAULT_32%" set "TESSERACT_CMD=%TESSERACT_DEFAULT_32%"
+)
 if not defined TESSERACT_CMD (
     for /f "delims=" %%t in ('where tesseract 2^>nul') do if not defined TESSERACT_CMD set "TESSERACT_CMD=%%t"
 )

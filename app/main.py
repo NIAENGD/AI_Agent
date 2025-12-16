@@ -7,6 +7,7 @@ capture using a local Tesseract installation.
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -245,9 +246,19 @@ class OCRApp(QtWidgets.QWidget):
 
     def _detect_local_tesseract(self) -> Optional[str]:
         repo_root = Path(__file__).resolve().parent.parent
-        candidate = repo_root / ".tesseract" / "tesseract.exe"
-        if candidate.exists():
-            return str(candidate)
+        candidates = [repo_root / ".tesseract" / "tesseract.exe"]
+
+        program_files = os.environ.get("PROGRAMFILES")
+        if program_files:
+            candidates.append(Path(program_files) / "Tesseract-OCR" / "tesseract.exe")
+
+        program_files_x86 = os.environ.get("PROGRAMFILES(X86)")
+        if program_files_x86:
+            candidates.append(Path(program_files_x86) / "Tesseract-OCR" / "tesseract.exe")
+
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
         return None
 
     def _apply_tesseract_path(self) -> None:
