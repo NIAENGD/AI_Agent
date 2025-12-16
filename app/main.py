@@ -9,6 +9,11 @@ Key UX goals:
 - Touchscreen-friendly, DPI-aware, resizable UI.
 - No "capture successful" popup after taking a capture; the preview updates in-place.
 - Crop selection is drawn on the preview, but OCR runs on the original-resolution image.
+
+Updates in this version:
+- Splitter ratio is configurable via a single ratio variable for windowed vs fullscreen.
+- Bottom buttons fill the available width (no unused blank space), and reflow into
+  multiple rows automatically when the window is narrow.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
+from math import ceil
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -212,7 +218,11 @@ class CaptureCanvas(wx.Panel):
     back to the original image resolution so OCR can run on original pixels.
     """
 
-    def __init__(self, parent: wx.Window, on_crop_changed: Optional[Callable[[Optional[Tuple[int, int, int, int]]], None]] = None):
+    def __init__(
+        self,
+        parent: wx.Window,
+        on_crop_changed: Optional[Callable[[Optional[Tuple[int, int, int, int]]], None]] = None,
+    ):
         super().__init__(parent)
 
         self.SetBackgroundColour(wx.Colour(245, 245, 245))
@@ -468,11 +478,24 @@ class OCRFrame(wx.Frame):
 
         self._crop_box: Optional[Tuple[int, int, int, int]] = None
         self._is_fullscreen: bool = False
+
+        # Adjust these to change preview:output ratio.
+        # 0.55 means left preview gets 55% of splitter width.
+        self._split_ratio_windowed: float = 0.45
+        self._split_ratio_fullscreen: float = 0.58
+
         self._button_base_size = self.FromDIP((170, 64))
-        self._button_base_font = None  # Will be captured once buttons are created.
+        self._button_base_font: Optional[wx.Font] = None  # captured once buttons are created.
         self._action_buttons: List[wx.Button] = []
         self._header_base_font: Optional[wx.Font] = None
         self._selected_label_base_font: Optional[wx.Font] = None
+
+        # Controls layout state.
+        self._controls_panel: Optional[wx.Panel] = None
+        self._controls_cols: Optional[int] = None
+
+        # Splitter handle.
+        self._splitter: Optional[wx.SplitterWindow] = None
 
         self._build_ui()
         self._apply_tesseract_path()
@@ -480,7 +503,6 @@ class OCRFrame(wx.Frame):
 
         # Keyboard shortcuts for full screen.
         self.Bind(wx.EVT_CHAR_HOOK, self._on_key_press)
-
         self.Bind(wx.EVT_CLOSE, self._on_close)
 
     # ---------- UI ----------
@@ -511,6 +533,8 @@ class OCRFrame(wx.Frame):
 
         # Main split area: preview (left) and OCR output (right).
         splitter = wx.SplitterWindow(self, style=wx.SP_LIVE_UPDATE | wx.SP_3D)
+        self._splitter = splitter
+
         left_panel = wx.Panel(splitter)
         right_panel = wx.Panel(splitter)
 
@@ -528,12 +552,13 @@ class OCRFrame(wx.Frame):
         right_box.Add(self._ocr_output, 1, wx.EXPAND | wx.ALL, self.FromDIP(8))
         right_panel.SetSizer(right_box)
 
+        # Initial split; final ratio is applied via _apply_split_ratio().
         splitter.SplitVertically(left_panel, right_panel, sashPosition=self.FromDIP(440))
         splitter.SetMinimumPaneSize(self.FromDIP(260))
 
-        # Touch-friendly button row (wraps on narrow windows).
+        # Controls panel: buttons fill width; reflow into rows when narrow.
         controls_panel = wx.Panel(self)
-        controls_sizer = wx.WrapSizer(wx.HORIZONTAL)
+        self._controls_panel = controls_panel
 
         self._start_btn = self._make_action_button(controls_panel, "Select Window")
         self._start_btn.Bind(wx.EVT_BUTTON, self._select_window)
@@ -557,9 +582,9 @@ class OCRFrame(wx.Frame):
             self._action_buttons.append(btn)
             if self._button_base_font is None:
                 self._button_base_font = btn.GetFont()
-            controls_sizer.Add(btn, 0, wx.ALL, self.FromDIP(6))
 
-        controls_panel.SetSizer(controls_sizer)
+        # Temporary; real sizer is created by _relayout_controls().
+        controls_panel.SetSizer(wx.BoxSizer(wx.HORIZONTAL))
 
         main = wx.BoxSizer(wx.VERTICAL)
         main.Add(info_panel, 0, wx.EXPAND | wx.ALL, self.FromDIP(12))
@@ -568,18 +593,22 @@ class OCRFrame(wx.Frame):
 
         self.SetSizer(main)
 
+        # Apply initial scaling + split ratio + controls layout.
         self._apply_touch_scaling(self._is_fullscreen)
+        self._apply_split_ratio(self._split_ratio_windowed)
+        self._relayout_controls(force=True)
 
-        # Dynamic wrap for header on resize.
+        # Dynamic wrap for header + responsive controls layout.
         self.Bind(wx.EVT_SIZE, self._on_frame_size)
 
     def _on_frame_size(self, event: wx.SizeEvent) -> None:
         try:
-            # Wrap based on available width; keep some margin.
             width = max(200, self.GetClientSize().width - self.FromDIP(40))
             self._header.Wrap(width)
         except Exception:
             pass
+
+        self._relayout_controls()
         event.Skip()
 
     def _on_key_press(self, event: wx.KeyEvent) -> None:
@@ -610,8 +639,9 @@ class OCRFrame(wx.Frame):
 
         for btn in self._action_buttons:
             btn.SetMinSize(wx.Size(int(self._button_base_size.width * factor), int(self._button_base_size.height * factor)))
-            font = (self._button_base_font or btn.GetFont()).Bold()
-            base_size = self._button_base_font.GetPointSize() if self._button_base_font else font.GetPointSize()
+            base_font = self._button_base_font or btn.GetFont()
+            font = base_font.Bold()
+            base_size = base_font.GetPointSize()
             font.SetPointSize(int(round(base_size * font_factor)))
             btn.SetFont(font)
 
@@ -626,7 +656,57 @@ class OCRFrame(wx.Frame):
                 base_size = font.GetPointSize()
             font.SetPointSize(int(round(base_size * font_factor)))
             label.SetFont(font)
+
+        self._relayout_controls(force=True)
         self.Layout()
+
+    def _apply_split_ratio(self, ratio: float) -> None:
+        """Apply splitter ratio for left (preview) vs right (OCR) panes."""
+        if self._splitter is None:
+            return
+        ratio = max(0.10, min(0.90, float(ratio)))
+        self._splitter.SetSashGravity(ratio)
+        w = max(1, self.GetClientSize().width)
+        self._splitter.SetSashPosition(int(w * ratio))
+
+    def _controls_target_columns(self, width: int) -> int:
+        """Compute how many button columns can fit, while keeping buttons touch-friendly."""
+        if not self._action_buttons:
+            return 1
+
+        # Include internal grid gaps when estimating.
+        gap = self.FromDIP(10)
+        min_btn_w = self._scaled_button_size().width
+        estimated_cell_w = min_btn_w + gap
+
+        max_cols = max(1, width // max(1, estimated_cell_w))
+        return max(1, min(len(self._action_buttons), max_cols))
+
+    def _relayout_controls(self, force: bool = False) -> None:
+        """Make bottom buttons fill full width; reflow into multiple rows when narrow."""
+        if self._controls_panel is None or not self._action_buttons:
+            return
+
+        panel = self._controls_panel
+        width = max(1, panel.GetClientSize().width)
+        cols = self._controls_target_columns(width)
+        if (not force) and (self._controls_cols == cols):
+            return
+
+        self._controls_cols = cols
+        rows = int(ceil(len(self._action_buttons) / cols))
+
+        gap = self.FromDIP(10)
+        grid = wx.GridSizer(rows=rows, cols=cols, vgap=gap, hgap=gap)
+
+        # Detach any previous sizer to avoid orphaned children in the old layout.
+        panel.SetSizer(None)
+
+        for btn in self._action_buttons:
+            grid.Add(btn, 0, wx.EXPAND)
+
+        panel.SetSizer(grid)
+        panel.Layout()
 
     def _toggle_fullscreen(self, target_state: Optional[bool] = None) -> None:
         desired = (not self._is_fullscreen) if target_state is None else target_state
@@ -636,6 +716,11 @@ class OCRFrame(wx.Frame):
         self._is_fullscreen = desired
         self.ShowFullScreen(desired, style=wx.FULLSCREEN_ALL)
         self._apply_touch_scaling(desired)
+
+        # Apply different splitter ratio in fullscreen if desired.
+        ratio = self._split_ratio_fullscreen if desired else self._split_ratio_windowed
+        self._apply_split_ratio(ratio)
+
         message = "Full screen enabled. Press F11 or use Settings to exit." if desired else "Exited full screen."
         self._set_status(message)
 
@@ -951,7 +1036,6 @@ class OCRFrame(wx.Frame):
             self._canvas.set_crop_mode(False)
             self._set_status("Crop mode cancelled.")
             return
-
 
         # If a crop is already set, this button clears it.
         if self._crop_box is not None:
