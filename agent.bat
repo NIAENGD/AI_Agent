@@ -215,10 +215,10 @@ if errorlevel 1 (
 exit /b 0
 
 :restart_if_needed
-if defined AGENT_RELAUNCHED exit /b 0
-echo Restarting with latest launcher...
-start "AI Agent" "%SELF_PATH%" /relaunch
-exit /b 0
+    if defined AGENT_RELAUNCHED exit /b 0
+    echo Restarting with latest launcher...
+    call "%SELF_PATH%" /relaunch
+    exit /b %errorlevel%
 
 :bootstrap_python
 call :locate_python_exe
