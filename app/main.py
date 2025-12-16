@@ -7,7 +7,9 @@ capture using a local Tesseract installation.
 
 from __future__ import annotations
 
+import importlib
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -173,6 +175,7 @@ class OCRApp(QtWidgets.QWidget):
         self._captured_image: Optional[Image.Image] = None
         self._tesseract_path: Optional[str] = self._detect_local_tesseract()
         self._dependency_state: Dict[str, bool] = {}
+        self._install_attempted = False
 
         self._build_ui()
         self._apply_tesseract_path()
@@ -222,27 +225,33 @@ class OCRApp(QtWidgets.QWidget):
     def _check_dependencies(self) -> None:
         """Detect missing modules early and give a single actionable message."""
 
-        self._dependency_state = {
-            "pygetwindow": gw is not None,
-            "pyautogui": pyautogui is not None,
-            "pillow": Image is not None and PilImageQt is not None,
-            "pytesseract": pytesseract is not None,
-        }
+        self._dependency_state = self._detect_dependency_state()
 
         missing = [name for name, ok in self._dependency_state.items() if not ok]
         if missing:
-            install_hint = "pip install -r requirements.txt"
+            if self._attempt_install_requirements():
+                self._dependency_state = self._detect_dependency_state()
+                missing = [name for name, ok in self._dependency_state.items() if not ok]
+
+        if missing:
             message = (
                 "The following Python packages are required but not available: \n"
                 + "\n".join(f" • {name}" for name in missing)
-                + "\n\nInstall them with:\n"
-                + install_hint
+                + "\n\nTried installing them automatically but some are still missing."
             )
             QtWidgets.QMessageBox.critical(self, "Missing dependencies", message)
 
         self._start_btn.setEnabled(self._dependency_state.get("pygetwindow", False))
         if not self._dependency_state.get("pygetwindow", False):
             self.status_message("Install pygetwindow to enable window selection.")
+
+    def _detect_dependency_state(self) -> Dict[str, bool]:
+        return {
+            "pygetwindow": gw is not None,
+            "pyautogui": pyautogui is not None,
+            "pillow": Image is not None and PilImageQt is not None,
+            "pytesseract": pytesseract is not None,
+        }
 
     def _detect_local_tesseract(self) -> Optional[str]:
         repo_root = Path(__file__).resolve().parent.parent
@@ -271,12 +280,89 @@ class OCRApp(QtWidgets.QWidget):
         if self._dependency_state.get(key, False):
             return True
 
+        if self._attempt_install_requirements():
+            self._dependency_state = self._detect_dependency_state()
+            if self._dependency_state.get(key, False):
+                return True
+
         QtWidgets.QMessageBox.critical(
             self,
             "Missing dependency",
             f"{friendly_name} is not installed. Please run: pip install -r requirements.txt",
         )
         return False
+
+    def _attempt_install_requirements(self) -> bool:
+        if self._install_attempted:
+            return False
+
+        self._install_attempted = True
+        if not self._install_requirements():
+            return False
+
+        self._refresh_optional_dependencies()
+        QtWidgets.QMessageBox.information(
+            self,
+            "Dependencies installed",
+            "Required packages were installed. Please retry your action.",
+        )
+        return True
+
+    def _install_requirements(self) -> bool:
+        requirements_path = Path(__file__).resolve().parent.parent / "requirements.txt"
+        if not requirements_path.exists():
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Missing requirements.txt",
+                f"Could not find requirements file at {requirements_path}.",
+            )
+            return False
+
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-r", str(requirements_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            details = exc.stderr or exc.stdout or "Unknown error"
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Dependency installation failed",
+                f"pip install failed with:\n{details}",
+            )
+            return False
+
+        return True
+
+    def _refresh_optional_dependencies(self) -> None:
+        global gw, pyautogui, pytesseract, Image, PilImageQt
+
+        if gw is None:
+            try:
+                gw = importlib.import_module("pygetwindow")
+            except Exception:  # pragma: no cover - optional dependency
+                gw = None
+        if pyautogui is None:
+            try:
+                pyautogui = importlib.import_module("pyautogui")
+            except Exception:  # pragma: no cover - optional dependency
+                pyautogui = None
+        if pytesseract is None:
+            try:
+                pytesseract = importlib.import_module("pytesseract")
+            except Exception:  # pragma: no cover - optional dependency
+                pytesseract = None
+        if Image is None or PilImageQt is None:
+            try:
+                from PIL import Image as PilImage
+                from PIL.ImageQt import ImageQt as PilImageQtImported
+                Image = PilImage
+                PilImageQt = PilImageQtImported
+            except Exception:  # pragma: no cover - optional dependency
+                Image = None
+                PilImageQt = None
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self._tesseract_path, self)
