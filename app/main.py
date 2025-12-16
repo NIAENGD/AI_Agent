@@ -62,17 +62,26 @@ def pil_to_bitmap(image: Image.Image) -> wx.Bitmap:
 
 
 class SettingsDialog(wx.Dialog):
-    """Simple settings dialog allowing tesseract executable configuration."""
+    """Simple settings dialog allowing tesseract executable configuration.
+
+    Note: The dialog is DPI-safe, resizable, and scrollable so controls remain
+    accessible on high-DPI displays and smaller screens.
+    """
 
     def __init__(self, parent: wx.Window, tesseract_path: Optional[str]):
-        super().__init__(parent, title="Settings", size=(520, 180))
+        super().__init__(parent, title="Settings", style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
 
-        instruction = wx.StaticText(self, label="Tesseract executable:")
-        self._path_ctrl = wx.TextCtrl(self, value=tesseract_path or "")
-        browse_btn = wx.Button(self, label="Browse…")
+        # Use a scrolled window so the dialog stays usable even if the OS scales
+        # fonts/controls larger than expected.
+        scroller = wx.ScrolledWindow(self, style=wx.TAB_TRAVERSAL)
+        scroller.SetScrollRate(10, 10)
+
+        instruction = wx.StaticText(scroller, label="Tesseract executable:")
+        self._path_ctrl = wx.TextCtrl(scroller, value=tesseract_path or "")
+        browse_btn = wx.Button(scroller, label="Browse…")
         browse_btn.Bind(wx.EVT_BUTTON, self._browse)
 
-        form_sizer = wx.FlexGridSizer(2, 2, 10, 10)
+        form_sizer = wx.FlexGridSizer(1, 2, 10, 10)
         form_sizer.AddGrowableCol(1, 1)
         form_sizer.Add(instruction, 0, wx.ALIGN_CENTER_VERTICAL)
         form_sizer.Add(self._path_ctrl, 1, wx.EXPAND)
@@ -83,13 +92,25 @@ class SettingsDialog(wx.Dialog):
 
         btn_sizer = self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL)
 
-        main_sizer = wx.BoxSizer(wx.VERTICAL)
-        main_sizer.Add(form_sizer, 0, wx.ALL | wx.EXPAND, 12)
-        main_sizer.Add(browse_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 12)
+        inner = wx.BoxSizer(wx.VERTICAL)
+        inner.Add(form_sizer, 0, wx.ALL | wx.EXPAND, 12)
+        inner.Add(browse_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 12)
         if btn_sizer:
-            main_sizer.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, 12)
+            inner.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, 12)
 
-        self.SetSizer(main_sizer)
+        scroller.SetSizer(inner)
+        inner.Fit(scroller)
+        scroller.FitInside()
+
+        outer = wx.BoxSizer(wx.VERTICAL)
+        outer.Add(scroller, 1, wx.EXPAND)
+        self.SetSizer(outer)
+
+        # Ensure a sensible minimum/initial size while still allowing resize.
+        self.SetMinSize(self.FromDIP((520, 240)))
+        self.SetSize(self.FromDIP((600, 260)))
+        self.Layout()
+        self.CentreOnParent()
 
     def _browse(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
         with wx.FileDialog(
@@ -105,7 +126,6 @@ class SettingsDialog(wx.Dialog):
     def tesseract_path(self) -> Optional[str]:
         text = self._path_ctrl.GetValue().strip()
         return text or None
-
 
 class WindowSelectionDialog(wx.Dialog):
     """Dialog that lists current top-level windows for selection."""
@@ -457,8 +477,28 @@ class OCRFrame(wx.Frame):
         bitmap.CreateCompatibleBitmap(window_dc, width, height)
         mem_dc.SelectObject(bitmap)
 
+        # Prefer win32gui.PrintWindow when available (some environments expose win32gui
+        # but do not include the PrintWindow wrapper). Fall back to user32.PrintWindow.
+        def _print_window(h: int, hdc: int, flags: int) -> int:
+            if hasattr(win32gui, "PrintWindow"):
+                return int(win32gui.PrintWindow(h, hdc, flags))
+
+            # Fallback: call the native Win32 API directly.
+            from ctypes import windll, wintypes
+
+            user32 = windll.user32
+            user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
+            user32.PrintWindow.restype = wintypes.BOOL
+            return int(user32.PrintWindow(h, hdc, flags))
+
         try:
-            result = win32gui.PrintWindow(hwnd, mem_dc.GetSafeHdc(), win32con.PW_RENDERFULLCONTENT)
+            flags = int(getattr(win32con, "PW_RENDERFULLCONTENT", 0x00000002))
+            result = _print_window(hwnd, mem_dc.GetSafeHdc(), flags)
+
+            # If the newer flag is unsupported, retry with 0 (valid across Windows versions).
+            if result != 1 and flags != 0:
+                result = _print_window(hwnd, mem_dc.GetSafeHdc(), 0)
+
             if result != 1:
                 return None
 
@@ -479,7 +519,6 @@ class OCRFrame(wx.Frame):
             mem_dc.DeleteDC()
             window_dc.DeleteDC()
             win32gui.ReleaseDC(hwnd, hwnd_dc)
-
     def _take_capture(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
         if self._selected_window is None:
             wx.MessageBox("Please select a window first.", "No window", wx.ICON_INFORMATION | wx.OK, parent=self)
