@@ -337,6 +337,24 @@ class OCRApp(QtWidgets.QWidget):
         dialog.setDetailedText(text)
         dialog.exec_()
 
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # type: ignore[override]
+        reason = (
+            "AI Agent is about to quit. Any selected window or OCR results will be lost.\n\n"
+            "Do you want to exit?"
+        )
+        result = QtWidgets.QMessageBox.question(
+            self,
+            "Exit AI Agent",
+            reason,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if result == QtWidgets.QMessageBox.Yes:
+            event.accept()
+        else:
+            event.ignore()
+            self.status_message("Close cancelled; continuing session.")
+
     def status_message(self, message: str) -> None:
         QtWidgets.QMessageBox.information(self, "Status", message)
 
