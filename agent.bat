@@ -55,7 +55,7 @@ if defined NEED_RESTART (
 )
 call :bootstrap_python || goto :fail
 call :bootstrap_dependencies || goto :fail
-call :run_app
+call :run_app || goto :fail
 endlocal
 exit /b %errorlevel%
 
@@ -347,6 +347,16 @@ if exist "%REQ_FILE%" (
         exit /b 1
     )
 )
+set "DEP_CHECK=import importlib,sys;mods=['PyQt5','pygetwindow','pyautogui','pytesseract','PIL'];missing=[m for m in mods if importlib.util.find_spec(m) is None]; print('Missing modules:' + ','.join(missing) if missing else '');sys.exit(1 if missing else 0)"
+"%APP_PY%" -c "%DEP_CHECK%" >nul 2>nul
+if errorlevel 1 (
+    echo Dependency check failed; reinstalling requirements...
+    "%APP_PY%" -m pip install -r "%REQ_FILE%"
+    if errorlevel 1 (
+        echo Dependency reinstallation failed.
+        exit /b 1
+    )
+)
 call :ensure_tesseract || exit /b 1
 exit /b 0
 
@@ -398,7 +408,12 @@ if not exist "%APP_ENTRY%" (
     )
 echo Launching AI Agent...
 "%APP_PY%" "%APP_ENTRY%"
-exit /b %errorlevel%
+set "APP_RC=%errorlevel%"
+if not "%APP_RC%"=="0" (
+    echo Application exited with code %APP_RC%.
+    exit /b %APP_RC%
+)
+exit /b 0
 
 :fail
 endlocal
