@@ -1,6 +1,6 @@
 """Phase 1 desktop GUI for window capture and OCR.
 
-This application targets Windows and uses PyQt5 for the GUI. It allows
+This application targets Windows and now uses wxPython for the GUI. It allows
 users to select an open window, capture its contents, and run OCR on the
 capture using a local Tesseract installation.
 """
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+import wx
 
 try:  # type: ignore
     import pygetwindow as gw
@@ -34,10 +34,8 @@ except Exception:  # pragma: no cover - optional dependency
 
 try:  # type: ignore
     from PIL import Image
-    from PIL.ImageQt import ImageQt
 except Exception:  # pragma: no cover - optional dependency
     Image = None
-    ImageQt = None
 
 
 @dataclass
@@ -53,95 +51,99 @@ class SelectedWindow:
         return self.left, self.top, self.width, self.height
 
 
-class SettingsDialog(QtWidgets.QDialog):
+def pil_to_bitmap(image: Image.Image) -> wx.Bitmap:
+    """Convert a PIL image to a wx.Bitmap for preview rendering."""
+
+    rgba = image.convert("RGBA")
+    width, height = rgba.size
+    return wx.Bitmap.FromBufferRGBA(width, height, rgba.tobytes())
+
+
+class SettingsDialog(wx.Dialog):
     """Simple settings dialog allowing tesseract executable configuration."""
 
-    def __init__(self, tesseract_path: Optional[str], parent: Optional[QtWidgets.QWidget] = None):
-        super().__init__(parent)
-        self.setWindowTitle("Settings")
-        self.resize(500, 150)
+    def __init__(self, parent: wx.Window, tesseract_path: Optional[str]):
+        super().__init__(parent, title="Settings", size=(520, 180))
 
-        self._path_edit = QtWidgets.QLineEdit(self)
-        if tesseract_path:
-            self._path_edit.setText(tesseract_path)
-        browse_btn = QtWidgets.QPushButton("Browse…", self)
-        browse_btn.clicked.connect(self._browse)
+        instruction = wx.StaticText(self, label="Tesseract executable:")
+        self._path_ctrl = wx.TextCtrl(self, value=tesseract_path or "")
+        browse_btn = wx.Button(self, label="Browse…")
+        browse_btn.Bind(wx.EVT_BUTTON, self._browse)
 
-        form = QtWidgets.QFormLayout()
-        form.addRow("Tesseract executable:", self._path_edit)
+        form_sizer = wx.FlexGridSizer(2, 2, 10, 10)
+        form_sizer.AddGrowableCol(1, 1)
+        form_sizer.Add(instruction, 0, wx.ALIGN_CENTER_VERTICAL)
+        form_sizer.Add(self._path_ctrl, 1, wx.EXPAND)
 
-        btn_box = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel, parent=self
-        )
-        btn_box.accepted.connect(self.accept)
-        btn_box.rejected.connect(self.reject)
+        browse_row = wx.BoxSizer(wx.HORIZONTAL)
+        browse_row.AddStretchSpacer(1)
+        browse_row.Add(browse_btn, 0)
 
-        layout = QtWidgets.QVBoxLayout()
-        path_layout = QtWidgets.QHBoxLayout()
-        path_layout.addWidget(self._path_edit)
-        path_layout.addWidget(browse_btn)
-        layout.addLayout(form)
-        layout.addLayout(path_layout)
-        layout.addWidget(btn_box)
-        self.setLayout(layout)
+        btn_sizer = self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL)
 
-    def _browse(self) -> None:
-        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select tesseract.exe", "", "Executable (*.exe)")
-        if file_path:
-            self._path_edit.setText(file_path)
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        main_sizer.Add(form_sizer, 0, wx.ALL | wx.EXPAND, 12)
+        main_sizer.Add(browse_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 12)
+        if btn_sizer:
+            main_sizer.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, 12)
+
+        self.SetSizer(main_sizer)
+
+    def _browse(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
+        with wx.FileDialog(
+            self,
+            message="Select tesseract.exe",
+            wildcard="Executable (*.exe)|*.exe|All files (*.*)|*.*",
+            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+        ) as dialog:
+            if dialog.ShowModal() == wx.ID_OK:
+                self._path_ctrl.SetValue(dialog.GetPath())
 
     @property
     def tesseract_path(self) -> Optional[str]:
-        text = self._path_edit.text().strip()
+        text = self._path_ctrl.GetValue().strip()
         return text or None
 
 
-class WindowSelectionDialog(QtWidgets.QDialog):
+class WindowSelectionDialog(wx.Dialog):
     """Dialog that lists current top-level windows for selection."""
 
-    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
-        super().__init__(parent)
-        self.setWindowTitle("Select a window to capture")
-        self.resize(400, 300)
+    def __init__(self, parent: wx.Window):
+        super().__init__(parent, title="Select a window to capture", size=(420, 360))
 
-        self._list_widget = QtWidgets.QListWidget(self)
-        self._list_widget.doubleClicked.connect(self.accept)
+        self._list_box = wx.ListBox(self)
+        refresh_btn = wx.Button(self, label="Refresh")
+        refresh_btn.Bind(wx.EVT_BUTTON, self._populate_windows)
 
-        refresh_btn = QtWidgets.QPushButton("Refresh", self)
-        refresh_btn.clicked.connect(self.populate_windows)
+        btn_sizer = self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL)
 
-        btn_box = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel, parent=self
-        )
-        btn_box.accepted.connect(self.accept)
-        btn_box.rejected.connect(self.reject)
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        main_sizer.Add(self._list_box, 1, wx.ALL | wx.EXPAND, 12)
+        main_sizer.Add(refresh_btn, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.ALIGN_RIGHT, 12)
+        if btn_sizer:
+            main_sizer.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, 12)
 
-        layout = QtWidgets.QVBoxLayout()
-        layout.addWidget(self._list_widget)
-        layout.addWidget(refresh_btn)
-        layout.addWidget(btn_box)
-        self.setLayout(layout)
+        self.SetSizer(main_sizer)
+        self._populate_windows()
 
-        self.populate_windows()
-
-    def populate_windows(self) -> None:
-        self._list_widget.clear()
+    def _populate_windows(self, event: Optional[wx.CommandEvent] = None) -> None:
+        self._list_box.Clear()
         if gw is None:
-            QtWidgets.QMessageBox.warning(self, "pygetwindow missing", "Install pygetwindow to list windows.")
+            wx.MessageBox("Install pygetwindow to list windows.", "pygetwindow missing", wx.ICON_WARNING | wx.OK, parent=self)
             return
 
         titles: List[str] = [title for title in gw.getAllTitles() if title.strip()]
         titles.sort()
-        self._list_widget.addItems(titles)
+        self._list_box.InsertItems(titles, 0)
 
     def selected_title(self) -> Optional[str]:
-        items = self._list_widget.selectedItems()
-        if not items:
+        selection = self._list_box.GetSelection()
+        if selection == wx.NOT_FOUND:
             return None
-        return items[0].text()
+        return self._list_box.GetString(selection)
 
     def get_selection(self) -> Optional[SelectedWindow]:
-        if self.exec_() != QtWidgets.QDialog.Accepted:
+        if self.ShowModal() != wx.ID_OK:
             return None
         title = self.selected_title()
         if not title or gw is None:
@@ -150,26 +152,35 @@ class WindowSelectionDialog(QtWidgets.QDialog):
         return SelectedWindow(title, window.left, window.top, window.width, window.height)
 
 
-class PreviewWidget(QtWidgets.QLabel):
+class PreviewPanel(wx.Panel):
     """Displays a scaled preview image."""
 
+    def __init__(self, parent: wx.Window):
+        super().__init__(parent, size=(660, 380))
+        self.SetBackgroundColour(wx.Colour(240, 240, 240))
+        self._bitmap: Optional[wx.Bitmap] = None
+
+        self._static_bitmap = wx.StaticBitmap(self)
+
+        border = wx.StaticBoxSizer(wx.StaticBox(self, label="Preview"), wx.VERTICAL)
+        border.Add(self._static_bitmap, 1, wx.ALL | wx.EXPAND, 6)
+
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        sizer.Add(border, 1, wx.ALL | wx.EXPAND, 8)
+        self.SetSizer(sizer)
+
+    def update_image(self, bitmap: wx.Bitmap) -> None:
+        self._bitmap = bitmap
+        target_size = self.GetClientSize()
+        image = bitmap.ConvertToImage()
+        scaled = image.Scale(target_size.width, target_size.height, wx.IMAGE_QUALITY_HIGH)
+        self._static_bitmap.SetBitmap(wx.Bitmap(scaled))
+        self.Layout()
+
+
+class OCRFrame(wx.Frame):
     def __init__(self):
-        super().__init__()
-        self.setFixedSize(640, 360)
-        self.setFrameStyle(QtWidgets.QFrame.Box | QtWidgets.QFrame.Plain)
-        self.setAlignment(QtCore.Qt.AlignCenter)
-        self.setText("Preview")
-
-    def update_image(self, pixmap: QtGui.QPixmap) -> None:
-        scaled = pixmap.scaled(self.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
-        self.setPixmap(scaled)
-
-
-class OCRApp(QtWidgets.QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Phase 1 Screen Capture")
-        self.resize(900, 500)
+        super().__init__(None, title="Phase 1 Screen Capture", size=(940, 560))
 
         self._selected_window: Optional[SelectedWindow] = None
         self._captured_image: Optional[Image.Image] = None
@@ -181,46 +192,51 @@ class OCRApp(QtWidgets.QWidget):
         self._apply_tesseract_path()
         self._check_dependencies()
 
+        self.Bind(wx.EVT_CLOSE, self._on_close)
+
     def _build_ui(self) -> None:
-        header = QtWidgets.QLabel(
-            "Select a window, take a snapshot, then process it locally.\n"
-            "Works best on Windows with Tesseract installed."
+        header = wx.StaticText(
+            self,
+            label=(
+                "Select a window, take a snapshot, then process it locally.\n"
+                "Works best on Windows with Tesseract installed."
+            ),
         )
-        header.setWordWrap(True)
+        header.Wrap(840)
 
-        self._preview = PreviewWidget()
+        self._preview = PreviewPanel(self)
 
-        self._take_btn = QtWidgets.QPushButton("Take")
-        self._take_btn.setEnabled(False)
-        self._take_btn.clicked.connect(self.take_capture)
+        self._take_btn = wx.Button(self, label="Take")
+        self._take_btn.Disable()
+        self._take_btn.Bind(wx.EVT_BUTTON, self._take_capture)
 
-        self._process_btn = QtWidgets.QPushButton("Process")
-        self._process_btn.setEnabled(False)
-        self._process_btn.clicked.connect(self.process_capture)
+        self._process_btn = wx.Button(self, label="Process")
+        self._process_btn.Disable()
+        self._process_btn.Bind(wx.EVT_BUTTON, self._process_capture)
 
-        self._start_btn = QtWidgets.QPushButton("Start")
-        self._start_btn.clicked.connect(self.select_window)
+        self._start_btn = wx.Button(self, label="Start")
+        self._start_btn.Bind(wx.EVT_BUTTON, self._select_window)
 
-        settings_btn = QtWidgets.QPushButton("Settings")
-        settings_btn.clicked.connect(self.open_settings)
+        settings_btn = wx.Button(self, label="Settings")
+        settings_btn.Bind(wx.EVT_BUTTON, self._open_settings)
 
-        button_col = QtWidgets.QVBoxLayout()
-        button_col.addWidget(self._start_btn)
-        button_col.addWidget(settings_btn)
-        button_col.addStretch()
-        button_col.addWidget(self._take_btn)
-        button_col.addWidget(self._process_btn)
-        button_col.addStretch()
+        button_col = wx.BoxSizer(wx.VERTICAL)
+        button_col.Add(self._start_btn, 0, wx.BOTTOM | wx.EXPAND, 8)
+        button_col.Add(settings_btn, 0, wx.BOTTOM | wx.EXPAND, 12)
+        button_col.AddStretchSpacer(1)
+        button_col.Add(self._take_btn, 0, wx.BOTTOM | wx.EXPAND, 8)
+        button_col.Add(self._process_btn, 0, wx.BOTTOM | wx.EXPAND, 8)
+        button_col.AddStretchSpacer(1)
 
-        main_layout = QtWidgets.QVBoxLayout()
-        main_layout.addWidget(header)
+        content_layout = wx.BoxSizer(wx.HORIZONTAL)
+        content_layout.Add(button_col, 0, wx.ALL | wx.EXPAND, 8)
+        content_layout.Add(self._preview, 1, wx.ALL | wx.EXPAND, 4)
 
-        content_layout = QtWidgets.QHBoxLayout()
-        content_layout.addLayout(button_col)
-        content_layout.addWidget(self._preview, stretch=1)
+        main_layout = wx.BoxSizer(wx.VERTICAL)
+        main_layout.Add(header, 0, wx.ALL | wx.EXPAND, 12)
+        main_layout.Add(content_layout, 1, wx.ALL | wx.EXPAND, 8)
 
-        main_layout.addLayout(content_layout)
-        self.setLayout(main_layout)
+        self.SetSizer(main_layout)
 
     def _check_dependencies(self) -> None:
         """Detect missing modules early and give a single actionable message."""
@@ -239,17 +255,17 @@ class OCRApp(QtWidgets.QWidget):
                 + "\n".join(f" • {name}" for name in missing)
                 + "\n\nTried installing them automatically but some are still missing."
             )
-            QtWidgets.QMessageBox.critical(self, "Missing dependencies", message)
+            wx.MessageBox(message, "Missing dependencies", wx.ICON_ERROR | wx.OK, parent=self)
 
-        self._start_btn.setEnabled(self._dependency_state.get("pygetwindow", False))
+        self._start_btn.Enable(self._dependency_state.get("pygetwindow", False))
         if not self._dependency_state.get("pygetwindow", False):
-            self.status_message("Install pygetwindow to enable window selection.")
+            self._status_message("Install pygetwindow to enable window selection.")
 
     def _detect_dependency_state(self) -> Dict[str, bool]:
         return {
             "pygetwindow": gw is not None,
             "pyautogui": pyautogui is not None,
-            "pillow": Image is not None and ImageQt is not None,
+            "pillow": Image is not None,
             "pytesseract": pytesseract is not None,
         }
 
@@ -285,10 +301,11 @@ class OCRApp(QtWidgets.QWidget):
             if self._dependency_state.get(key, False):
                 return True
 
-        QtWidgets.QMessageBox.critical(
-            self,
-            "Missing dependency",
+        wx.MessageBox(
             f"{friendly_name} is not installed. Please run: pip install -r requirements.txt",
+            "Missing dependency",
+            wx.ICON_ERROR | wx.OK,
+            parent=self,
         )
         return False
 
@@ -301,20 +318,22 @@ class OCRApp(QtWidgets.QWidget):
             return False
 
         self._refresh_optional_dependencies()
-        QtWidgets.QMessageBox.information(
-            self,
-            "Dependencies installed",
+        wx.MessageBox(
             "Required packages were installed. Please retry your action.",
+            "Dependencies installed",
+            wx.ICON_INFORMATION | wx.OK,
+            parent=self,
         )
         return True
 
     def _install_requirements(self) -> bool:
         requirements_path = Path(__file__).resolve().parent.parent / "requirements.txt"
         if not requirements_path.exists():
-            QtWidgets.QMessageBox.critical(
-                self,
-                "Missing requirements.txt",
+            wx.MessageBox(
                 f"Could not find requirements file at {requirements_path}.",
+                "Missing requirements.txt",
+                wx.ICON_ERROR | wx.OK,
+                parent=self,
             )
             return False
 
@@ -327,17 +346,18 @@ class OCRApp(QtWidgets.QWidget):
             )
         except subprocess.CalledProcessError as exc:
             details = exc.stderr or exc.stdout or "Unknown error"
-            QtWidgets.QMessageBox.critical(
-                self,
-                "Dependency installation failed",
+            wx.MessageBox(
                 f"pip install failed with:\n{details}",
+                "Dependency installation failed",
+                wx.ICON_ERROR | wx.OK,
+                parent=self,
             )
             return False
 
         return True
 
     def _refresh_optional_dependencies(self) -> None:
-        global gw, pyautogui, pytesseract, Image, ImageQt
+        global gw, pyautogui, pytesseract, Image
 
         if gw is None:
             try:
@@ -354,37 +374,37 @@ class OCRApp(QtWidgets.QWidget):
                 pytesseract = importlib.import_module("pytesseract")
             except Exception:  # pragma: no cover - optional dependency
                 pytesseract = None
-        if Image is None or ImageQt is None:
+        if Image is None:
             try:
                 from PIL import Image as PilImage
-                from PIL.ImageQt import ImageQt as ImageQtImported
+
                 Image = PilImage
-                ImageQt = ImageQtImported
             except Exception:  # pragma: no cover - optional dependency
                 Image = None
-                ImageQt = None
 
-    def open_settings(self) -> None:
-        dialog = SettingsDialog(self._tesseract_path, self)
-        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+    def _open_settings(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
+        dialog = SettingsDialog(self, self._tesseract_path)
+        if dialog.ShowModal() == wx.ID_OK:
             self._tesseract_path = dialog.tesseract_path
             self._apply_tesseract_path()
+        dialog.Destroy()
 
-    def select_window(self) -> None:
+    def _select_window(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
         if not self._ensure_dependency("pygetwindow", "pygetwindow"):
             return
         dialog = WindowSelectionDialog(self)
         selection = dialog.get_selection()
+        dialog.Destroy()
         if not selection:
             return
         self._selected_window = selection
-        self._take_btn.setEnabled(True)
-        self._process_btn.setEnabled(False)
-        self.status_message(f"Selected window: {selection.title}")
+        self._take_btn.Enable()
+        self._process_btn.Disable()
+        self._status_message(f"Selected window: {selection.title}")
 
-    def take_capture(self) -> None:
+    def _take_capture(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
         if self._selected_window is None:
-            QtWidgets.QMessageBox.information(self, "No window", "Please select a window first.")
+            wx.MessageBox("Please select a window first.", "No window", wx.ICON_INFORMATION | wx.OK, parent=self)
             return
         if not self._ensure_dependency("pyautogui", "pyautogui"):
             return
@@ -394,19 +414,18 @@ class OCRApp(QtWidgets.QWidget):
         try:
             screenshot = pyautogui.screenshot(region=self._selected_window.region)
         except Exception as exc:  # pragma: no cover - user environment specific
-            QtWidgets.QMessageBox.critical(self, "Capture failed", str(exc))
+            wx.MessageBox(str(exc), "Capture failed", wx.ICON_ERROR | wx.OK, parent=self)
             return
 
         self._captured_image = screenshot
-        qimage = ImageQt(screenshot)
-        pixmap = QtGui.QPixmap.fromImage(qimage)
-        self._preview.update_image(pixmap)
-        self._process_btn.setEnabled(True)
-        self.status_message("Capture ready for processing")
+        bitmap = pil_to_bitmap(screenshot)
+        self._preview.update_image(bitmap)
+        self._process_btn.Enable()
+        self._status_message("Capture ready for processing")
 
-    def process_capture(self) -> None:
+    def _process_capture(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
         if self._captured_image is None:
-            QtWidgets.QMessageBox.information(self, "No capture", "Take a capture first.")
+            wx.MessageBox("Take a capture first.", "No capture", wx.ICON_INFORMATION | wx.OK, parent=self)
             return
         if not self._ensure_dependency("pytesseract", "pytesseract"):
             return
@@ -414,42 +433,39 @@ class OCRApp(QtWidgets.QWidget):
         try:
             text = pytesseract.image_to_string(self._captured_image)
         except Exception as exc:  # pragma: no cover - user environment specific
-            QtWidgets.QMessageBox.critical(self, "Processing failed", str(exc))
+            wx.MessageBox(str(exc), "Processing failed", wx.ICON_ERROR | wx.OK, parent=self)
             return
 
-        dialog = QtWidgets.QMessageBox(self)
-        dialog.setWindowTitle("OCR Result")
-        dialog.setText("Extracted text:")
-        dialog.setDetailedText(text)
-        dialog.exec_()
+        with wx.MessageDialog(
+            self,
+            message="Extracted text:",
+            caption="OCR Result",
+            style=wx.OK | wx.CENTRE | wx.STAY_ON_TOP,
+        ) as dialog:
+            dialog.SetExtendedMessage(text)
+            dialog.ShowModal()
 
-    def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # type: ignore[override]
+    def _on_close(self, event: wx.CloseEvent) -> None:  # pragma: no cover - UI interaction
         reason = (
             "AI Agent is about to quit. Any selected window or OCR results will be lost.\n\n"
             "Do you want to exit?"
         )
-        result = QtWidgets.QMessageBox.question(
-            self,
-            "Exit AI Agent",
-            reason,
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.No,
-        )
-        if result == QtWidgets.QMessageBox.Yes:
-            event.accept()
+        if wx.MessageBox(reason, "Exit AI Agent", wx.ICON_QUESTION | wx.YES_NO, parent=self) == wx.YES:
+            self.Destroy()
         else:
-            event.ignore()
-            self.status_message("Close cancelled; continuing session.")
+            event.Veto()
+            self._status_message("Close cancelled; continuing session.")
 
-    def status_message(self, message: str) -> None:
-        QtWidgets.QMessageBox.information(self, "Status", message)
+    def _status_message(self, message: str) -> None:
+        wx.MessageBox(message, "Status", wx.ICON_INFORMATION | wx.OK, parent=self)
 
 
 def main() -> int:
-    app = QtWidgets.QApplication(sys.argv)
-    window = OCRApp()
-    window.show()
-    return app.exec_()
+    app = wx.App()
+    frame = OCRFrame()
+    frame.Show()
+    app.MainLoop()
+    return 0
 
 
 if __name__ == "__main__":
