@@ -34,6 +34,7 @@ set "VERSION_FILE=%INSTALL_ROOT%\.source_version"
 set "SELF_PATH=%~f0"
 set "PY_VERSION=3.11.9"
 set "PY_INSTALLER_URL=https://www.python.org/ftp/python/%PY_VERSION%/python-%PY_VERSION%-amd64.exe"
+set "PY_EMBED_ZIP_URL=https://www.python.org/ftp/python/%PY_VERSION%/python-%PY_VERSION%-embed-amd64.zip"
 set "TESS_HOME=%INSTALL_ROOT%\.tesseract"
 set "TESS_EXE=%TESS_HOME%\tesseract.exe"
 set "TESS_DEFAULT_64=%ProgramFiles%\Tesseract-OCR\tesseract.exe"
@@ -240,11 +241,51 @@ if errorlevel 1 (
 )
 if exist "%PY_INSTALLER%" del "%PY_INSTALLER%" >nul 2>nul
 if not exist "%PY_HOME%\python.exe" (
-    echo Python installation did not produce python.exe.
-    exit /b 1
+    echo Python installation did not produce python.exe. Attempting embeddable runtime...
+    call :install_embeddable_python || exit /b 1
 )
 set "PYTHON_CMD=%PY_HOME%\python.exe"
 "%PYTHON_CMD%" -m pip config set global.no-cache-dir true >nul 2>nul
+exit /b 0
+
+:install_embeddable_python
+echo Downloading embeddable Python %PY_VERSION% ...
+set "PY_EMBED_ZIP=%TEMP%\python-%PY_VERSION%-embed-amd64.zip"
+powershell -NoLogo -NoProfile -Command "Invoke-WebRequest -UseBasicParsing -Uri '%PY_EMBED_ZIP_URL%' -OutFile '%PY_EMBED_ZIP%'" >nul
+if errorlevel 1 (
+    echo Failed to download embeddable Python package.
+    exit /b 1
+)
+
+if not exist "%PY_HOME%" mkdir "%PY_HOME%" >nul 2>nul
+echo Extracting embeddable runtime to %PY_HOME% ...
+powershell -NoLogo -NoProfile -Command "Expand-Archive -Path '%PY_EMBED_ZIP%' -DestinationPath '%PY_HOME%' -Force" >nul
+if errorlevel 1 (
+    echo Failed to extract embeddable Python runtime.
+    if exist "%PY_EMBED_ZIP%" del "%PY_EMBED_ZIP%" >nul 2>nul
+    exit /b 1
+)
+if exist "%PY_EMBED_ZIP%" del "%PY_EMBED_ZIP%" >nul 2>nul
+
+if not exist "%PY_HOME%\python.exe" (
+    echo Embeddable runtime did not provide python.exe.
+    exit /b 1
+)
+
+set "PY_TAG="
+for /f "tokens=1-2 delims=." %%a in ("%PY_VERSION%") do (
+    set "PY_TAG=%%a%%b"
+)
+if defined PY_TAG if exist "%PY_HOME%\python%PY_TAG%._pth" (
+    (
+        echo python%PY_TAG%.zip
+        echo .
+        echo Lib
+        echo Lib\site-packages
+        echo import site
+    )> "%PY_HOME%\python%PY_TAG%._pth"
+)
+
 exit /b 0
 
 :bootstrap_dependencies
