@@ -47,6 +47,6 @@ python app/main.py
 4. Use **Settings** to set the `tesseract.exe` path if it is not on `PATH`.
 
 ## Notes
-- On startup the app now performs a dependency check (wxPython, pygetwindow, pyautogui, Pillow, pytesseract) and shows a single actionable message if anything is missing—run `pip install -r requirements.txt` to resolve them.
-- Screen capture relies on `pyautogui`; ensure the selected window is not minimized.
+- On startup the app now performs a dependency check (wxPython, pygetwindow, pyautogui, Pillow, pytesseract, pywin32) and shows a single actionable message if anything is missing—run `pip install -r requirements.txt` to resolve them.
+- Screen capture first uses Win32's `PrintWindow` via `pywin32` for compatibility with hardware-accelerated windows. If that fails, it falls back to `pyautogui` and requires the window to be visible and not minimized.
 - OCR accuracy depends on your Tesseract installation and language packs.

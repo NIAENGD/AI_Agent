@@ -8,6 +8,7 @@ capture using a local Tesseract installation.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import os
 import subprocess
 import sys
@@ -45,6 +46,7 @@ class SelectedWindow:
     top: int
     width: int
     height: int
+    hwnd: Optional[int] = None
 
     @property
     def region(self) -> tuple[int, int, int, int]:
@@ -149,7 +151,14 @@ class WindowSelectionDialog(wx.Dialog):
         if not title or gw is None:
             return None
         window = gw.getWindowsWithTitle(title)[0]
-        return SelectedWindow(title, window.left, window.top, window.width, window.height)
+        return SelectedWindow(
+            title,
+            window.left,
+            window.top,
+            window.width,
+            window.height,
+            getattr(window, "_hWnd", None),
+        )
 
 
 class PreviewPanel(wx.Panel):
@@ -267,7 +276,12 @@ class OCRFrame(wx.Frame):
             "pyautogui": pyautogui is not None,
             "pillow": Image is not None,
             "pytesseract": pytesseract is not None,
+            "pywin32": self._has_pywin32(),
         }
+
+    def _has_pywin32(self) -> bool:
+        required_modules = ("win32gui", "win32ui", "win32con")
+        return all(importlib.util.find_spec(module) is not None for module in required_modules)
 
     def _detect_local_tesseract(self) -> Optional[str]:
         repo_root = Path(__file__).resolve().parent.parent
@@ -402,19 +416,86 @@ class OCRFrame(wx.Frame):
         self._process_btn.Disable()
         self._status_message(f"Selected window: {selection.title}")
 
+    def _capture_selected_window(self) -> Optional[Image.Image]:
+        if self._selected_window is None:
+            return None
+        if not self._ensure_dependency("pillow", "Pillow"):
+            return None
+        if sys.platform == "win32" and self._selected_window.hwnd and self._ensure_dependency(
+            "pywin32", "pywin32"
+        ):
+            win32_capture = self._capture_with_win32(self._selected_window)
+            if win32_capture is not None:
+                return win32_capture
+        if not self._ensure_dependency("pyautogui", "pyautogui"):
+            return None
+        if pyautogui is None:
+            return None
+        return pyautogui.screenshot(region=self._selected_window.region)
+
+    def _capture_with_win32(self, selection: SelectedWindow) -> Optional[Image.Image]:
+        import win32con
+        import win32gui
+        import win32ui
+
+        hwnd = selection.hwnd
+        if hwnd is None:
+            return None
+
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        width, height = right - left, bottom - top
+        if width <= 0 or height <= 0:
+            return None
+
+        hwnd_dc = win32gui.GetWindowDC(hwnd)
+        if hwnd_dc == 0:
+            return None
+
+        window_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+        mem_dc = window_dc.CreateCompatibleDC()
+        bitmap = win32ui.CreateBitmap()
+        bitmap.CreateCompatibleBitmap(window_dc, width, height)
+        mem_dc.SelectObject(bitmap)
+
+        try:
+            result = win32gui.PrintWindow(hwnd, mem_dc.GetSafeHdc(), win32con.PW_RENDERFULLCONTENT)
+            if result != 1:
+                return None
+
+            bmpinfo = bitmap.GetInfo()
+            bmpstr = bitmap.GetBitmapBits(True)
+            image = Image.frombuffer(
+                "RGB",
+                (bmpinfo["bmWidth"], bmpinfo["bmHeight"]),
+                bmpstr,
+                "raw",
+                "BGRX",
+                0,
+                1,
+            )
+            return image.crop((0, 0, width, height))
+        finally:
+            win32gui.DeleteObject(bitmap.GetHandle())
+            mem_dc.DeleteDC()
+            window_dc.DeleteDC()
+            win32gui.ReleaseDC(hwnd, hwnd_dc)
+
     def _take_capture(self, event: wx.CommandEvent) -> None:  # pragma: no cover - UI interaction
         if self._selected_window is None:
             wx.MessageBox("Please select a window first.", "No window", wx.ICON_INFORMATION | wx.OK, parent=self)
             return
-        if not self._ensure_dependency("pyautogui", "pyautogui"):
-            return
-        if not self._ensure_dependency("pillow", "Pillow"):
-            return
-
         try:
-            screenshot = pyautogui.screenshot(region=self._selected_window.region)
+            screenshot = self._capture_selected_window()
         except Exception as exc:  # pragma: no cover - user environment specific
             wx.MessageBox(str(exc), "Capture failed", wx.ICON_ERROR | wx.OK, parent=self)
+            return
+        if screenshot is None:
+            wx.MessageBox(
+                "Could not capture the selected window. Make sure it is visible and try again.",
+                "Capture failed",
+                wx.ICON_ERROR | wx.OK,
+                parent=self,
+            )
             return
 
         self._captured_image = screenshot
