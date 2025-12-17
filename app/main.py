@@ -719,11 +719,20 @@ def index() -> str:
 
 _PAGE_TEMPLATE = """
 <!doctype html>
-<html lang=\"en\">
+<html lang="en">
 <head>
-  <meta charset=\"utf-8\" />
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Agent - Web Capture & OCR</title>
+  <script>
+    window.MathJax = {
+      tex: { inlineMath: [['$', '$'], ['\\(', '\\)']] },
+      svg: { fontCache: 'global' }
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
   <style>
     :root {
       --bg: #f2f2f2;
@@ -734,32 +743,49 @@ _PAGE_TEMPLATE = """
       --accent: #3d3d3d;
       --accent-strong: #2b2b2b;
       --highlight: #ececec;
+      --success: #0a7d4d;
     }
+    * { box-sizing: border-box; }
     body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: var(--bg); color: var(--text); }
     header { background: var(--accent-strong); color: #f5f5f5; padding: 16px 24px; }
-    main { padding: 20px; max-width: 1200px; margin: 0 auto; }
-    section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
     h1 { margin: 0 0 6px; }
     h2 { margin-top: 0; color: var(--accent-strong); }
+    h3 { margin: 0 0 6px; color: var(--accent-strong); }
     button { background: var(--accent); color: #f5f5f5; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; }
     button.secondary { background: var(--muted); color: #f5f5f5; }
+    button.ghost { background: transparent; color: var(--accent-strong); border: 1px solid var(--border); }
     button:disabled { background: #b5b5b5; cursor: not-allowed; }
     label { display: block; margin-bottom: 6px; font-weight: bold; color: var(--accent-strong); }
     input, select, textarea { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); box-sizing: border-box; font-size: 14px; background: #fdfdfd; color: var(--text); }
     textarea { min-height: 90px; }
-    .row { display: flex; gap: 16px; flex-wrap: wrap; }
-    .col { flex: 1 1 300px; }
-    #status { margin-top: 8px; color: var(--accent-strong); font-weight: bold; }
-    #preview-container { position: relative; display: inline-block; }
+    .shell { padding: 16px; max-width: 1400px; margin: 0 auto; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    .panel + .panel { margin-top: 12px; }
+    .page { display: none; flex-direction: column; gap: 12px; aspect-ratio: 16 / 9; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; box-shadow: 0 1px 6px rgba(0,0,0,0.08); overflow: auto; }
+    .page.active { display: flex; }
+    .page-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .page-heading .title { font-size: 18px; font-weight: bold; color: var(--accent-strong); }
+    .page-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .grid { display: grid; gap: 12px; }
+    .grid.two { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .stack { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    #status { color: var(--accent-strong); font-weight: bold; margin-top: 4px; }
+    #orientationNotice { display: none; margin-top: 10px; background: #5a5a5a; color: #f5f5f5; padding: 8px 12px; border-radius: 8px; }
+    body.portrait-warning #orientationNotice { display: block; }
+    #preview-container { position: relative; display: inline-block; max-width: 100%; }
     #crop-overlay { position: absolute; border: 2px dashed #707070; background: rgba(112, 112, 112, 0.2); display: none; pointer-events: none; }
     #captureImage { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
     pre { background: var(--highlight); padding: 12px; border-radius: 8px; white-space: pre-wrap; border: 1px solid var(--border); }
-    #orientationNotice { display: none; margin-top: 10px; background: #5a5a5a; color: #f5f5f5; padding: 8px 12px; border-radius: 8px; }
-    body.portrait-warning #orientationNotice { display: block; }
     .queue-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
     .queue-item { border: 1px solid var(--border); padding: 8px; border-radius: 8px; background: var(--highlight); }
     .queue-item-title { font-weight: bold; color: var(--accent-strong); margin-bottom: 4px; }
-    .stack { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .stepper { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 8px; margin: 16px 0; }
+    .step { background: #e6e6e6; color: var(--accent-strong); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); display: flex; align-items: center; gap: 8px; cursor: pointer; justify-content: center; text-align: center; }
+    .step.active { background: var(--accent); color: #f5f5f5; border-color: var(--accent); }
+    .label-muted { color: var(--muted); font-size: 13px; }
+    .result-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+    .rendered-box { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 12px; min-height: 240px; overflow: auto; }
+    .tag { display: inline-block; background: var(--highlight); border-radius: 6px; padding: 4px 8px; border: 1px solid var(--border); font-size: 12px; }
   </style>
 </head>
 <body>
@@ -767,7 +793,7 @@ _PAGE_TEMPLATE = """
     <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
       <div>
         <h1 style="margin-bottom:4px;">AI Agent - Web Capture & OCR</h1>
-        <div>Workflow: Select a window → Capture → (Optional) Crop → OCR.</div>
+        <div>One-screen flow: Setup → Capture → Submit → Result.</div>
       </div>
       <div style="display:flex; gap:8px;">
         <button id="fullscreenBtn" type="button" class="secondary">Fullscreen</button>
@@ -775,101 +801,157 @@ _PAGE_TEMPLATE = """
     </div>
     <div id="orientationNotice">Best viewed in landscape on mobile. Rotate your device if needed.</div>
   </header>
-  <main>
-    <section>
-      <div class=\"row\">
-        <div class=\"col\">
+  <div class="shell">
+    <div class="stepper">
+      <div class="step active" data-page-target="1">1. Setup</div>
+      <div class="step" data-page-target="2">2. Capture</div>
+      <div class="step" data-page-target="3">3. Submit</div>
+      <div class="step" data-page-target="4">4. Result</div>
+    </div>
+    <div id="status"></div>
+
+    <section class="page active" data-page="1">
+      <div class="page-heading">
+        <div class="title">Page 1 · Setup and configuration</div>
+        <div class="label-muted">Choose a target window and confirm settings.</div>
+      </div>
+      <div class="grid two">
+        <div class="panel">
           <h2>Window selection</h2>
-          <label for=\"windowSelect\">Open windows</label>
-          <select id=\"windowSelect\"></select>
-          <div style=\"margin-top:8px; display:flex; gap:8px; flex-wrap: wrap;\">
-            <button id=\"refreshBtn\" type=\"button\">Refresh</button>
-            <button id=\"captureBtn\" type=\"button\">Capture</button>
+          <label for="windowSelect">Open windows</label>
+          <select id="windowSelect"></select>
+          <div class="stack" style="margin-top:8px;">
+            <button id="refreshBtn" type="button">Refresh</button>
+            <button id="captureBtn" type="button">Capture</button>
           </div>
         </div>
-        <div class=\"col\">
+        <div class="panel">
           <h2>App settings</h2>
-          <label for=\"tesseractPath\">Tesseract executable</label>
-          <input id=\"tesseractPath\" type=\"text\" placeholder=\"Path to tesseract.exe\" value=\"{{ tesseract_path }}\" />
-          <label for=\"apiKey\" style=\"margin-top:8px;\">OpenAI API key</label>
-          <input id=\"apiKey\" type=\"password\" placeholder=\"sk-...\" autocomplete=\"off\" />
-          <div id=\"apiKeyStatus\" style=\"margin-top:6px; color: var(--muted); font-size: 13px;\">No API key saved.</div>
-          <div style=\"margin-top:4px; color: var(--muted); font-size: 13px;\">Stored in configs/api_key.txt. Leave blank to clear.</div>
-          <div style=\"margin-top:8px;\">
-            <button id=\"saveSettingsBtn\" type=\"button\">Save settings</button>
+          <label for="tesseractPath">Tesseract executable</label>
+          <input id="tesseractPath" type="text" placeholder="Path to tesseract.exe" value="{{ tesseract_path }}" />
+          <label for="apiKey" style="margin-top:8px;">OpenAI API key</label>
+          <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
+          <div id="apiKeyStatus" class="label-muted" style="margin-top:6px;">No API key saved.</div>
+          <div class="label-muted" style="margin-top:4px;">Stored in configs/api_key.txt. Leave blank to clear.</div>
+          <div style="margin-top:8px;">
+            <button id="saveSettingsBtn" type="button">Save settings</button>
           </div>
+          <div class="label-muted" style="margin-top:10px;">Detected crop box: {{ crop_box if crop_box else 'None' }}</div>
         </div>
       </div>
-      <div id=\"status\"></div>
+      <div class="page-actions">
+        <button class="ghost" type="button" data-page-target="2">Go to capture</button>
+      </div>
     </section>
 
-    <section>
-      <h2>Preview & crop</h2>
-      {% if has_capture %}
-      <div id=\"preview-container\">
-        <img id=\"captureImage\" src=\"/image\" alt=\"Capture preview\" />
-        <div id=\"crop-overlay\"></div>
+    <section class="page" data-page="2">
+      <div class="page-heading">
+        <div class="title">Page 2 · Capture</div>
+        <div class="label-muted">Grab an image, crop it, and review OCR before queuing.</div>
       </div>
-      {% else %}
-      <div>No capture yet. Select a window and click Capture.</div>
-      <div id=\"preview-container\" style=\"display:none;\">
-        <img id=\"captureImage\" src=\"\" alt=\"Capture preview\" />
-        <div id=\"crop-overlay\"></div>
-      </div>
-      {% endif %}
-        <div style=\"margin-top: 12px; display:flex; gap:8px; flex-wrap:wrap;\">
-          <button id=\"startCropBtn\" type=\"button\">Select crop area</button>
-          <button id=\"clearCropBtn\" type=\"button\" class=\"secondary\">Clear crop</button>
-          <button id=\"ocrBtn\" type=\"button\">Run OCR</button>
+      <div class="grid two">
+        <div class="panel">
+          <h2>Preview & crop</h2>
+          {% if has_capture %}
+          <div id="preview-container">
+            <img id="captureImage" src="/image" alt="Capture preview" />
+            <div id="crop-overlay"></div>
+          </div>
+          {% else %}
+          <div>No capture yet. Select a window and click Capture.</div>
+          <div id="preview-container" style="display:none;">
+            <img id="captureImage" src="" alt="Capture preview" />
+            <div id="crop-overlay"></div>
+          </div>
+          {% endif %}
+          <div class="stack" style="margin-top: 12px;">
+            <button id="startCropBtn" type="button">Select crop area</button>
+            <button id="clearCropBtn" type="button" class="secondary">Clear crop</button>
+            <button id="ocrBtn" type="button">Run OCR</button>
+          </div>
+          <div id="cropInfo" class="label-muted" style="margin-top:6px;"></div>
         </div>
-      <div id=\"cropInfo\" style=\"margin-top:6px; color:#444;\"></div>
-    </section>
-
-    <section>
-      <h2>OCR output</h2>
-      <pre id=\"ocrOutput\"></pre>
-      <div class=\"stack\" style=\"margin-top:8px;\">
-        <button id=\"queueBtn\" type=\"button\">Save to queue</button>
-        <button id=\"clearQueueBtn\" type=\"button\" class=\"secondary\">Clear queue</button>
+        <div class="panel">
+          <h2>OCR output</h2>
+          <pre id="ocrOutput"></pre>
+          <div class="stack" style="margin-top:8px;">
+            <button id="queueBtn" type="button">Save to queue</button>
+            <button id="clearQueueBtn" type="button" class="secondary">Clear queue</button>
+          </div>
+          <div id="queueStatus" class="label-muted" style="margin-top:6px;"></div>
+        </div>
       </div>
-      <div id=\"queueStatus\" style=\"color: var(--muted); margin-top:6px;\"></div>
+      <div class="page-actions">
+        <button class="ghost" type="button" data-page-target="1">Back to setup</button>
+        <button type="button" data-page-target="3">Next: submit</button>
+      </div>
     </section>
 
-    <section>
-      <h2>Prompts &amp; AI response</h2>
-      <div class=\"row\">
-        <div class=\"col\">
-          <label for=\"promptSelect\">Saved prompts</label>
-          <select id=\"promptSelect\"></select>
-          <div class=\"stack\" style=\"margin-top:8px;\">
-            <input id=\"newPromptTitle\" type=\"text\" placeholder=\"New prompt title\" />
-            <div style=\"display:flex; gap:8px; flex-wrap:wrap;\">
-              <button id=\"savePromptBtn\" type=\"button\">Save prompt</button>
-              <button id=\"updatePromptBtn\" type=\"button\" class=\"secondary\">Update selected</button>
-              <button id=\"deletePromptBtn\" type=\"button\" class=\"secondary\">Delete selected</button>
+    <section class="page" data-page="3">
+      <div class="page-heading">
+        <div class="title">Page 3 · Submit</div>
+        <div class="label-muted">Queue items on the left, prompt and options on the right.</div>
+      </div>
+      <div class="grid two">
+        <div class="panel">
+          <h2>Queued captures</h2>
+          <div class="stack" style="margin-bottom:8px;">
+            <span class="tag" id="queueCount">0/10 queued</span>
+            <span class="label-muted">Add more items from the Capture page if needed.</span>
+          </div>
+          <ul class="queue-list" id="queueList"></ul>
+        </div>
+        <div class="panel">
+          <h2>Prompt & options</h2>
+          <label for="promptSelect">Saved prompts</label>
+          <select id="promptSelect"></select>
+          <div class="stack" style="margin-top:8px;">
+            <input id="newPromptTitle" type="text" placeholder="New prompt title" />
+            <div class="stack">
+              <button id="savePromptBtn" type="button">Save prompt</button>
+              <button id="updatePromptBtn" type="button" class="secondary">Update selected</button>
+              <button id="deletePromptBtn" type="button" class="secondary">Delete selected</button>
             </div>
           </div>
-          <label for=\"promptText\" style=\"margin-top:8px;\">Prompt text</label>
-          <textarea id=\"promptText\" placeholder=\"Select a saved prompt or type your own\"></textarea>
-          <div class=\"stack\" style=\"margin-top:8px;\">
-            <input id=\"configFileInput\" type=\"file\" accept=\"text/plain\" />
-            <button id=\"uploadConfigBtn\" type=\"button\" class=\"secondary\">Upload .txt prompts</button>
+          <label for="promptText" style="margin-top:8px;">Prompt text</label>
+          <textarea id="promptText" placeholder="Select a saved prompt or type your own"></textarea>
+          <div class="stack" style="margin-top:8px;">
+            <input id="configFileInput" type="file" accept="text/plain" />
+            <button id="uploadConfigBtn" type="button" class="secondary">Upload .txt prompts</button>
           </div>
-        </div>
-        <div class=\"col\">
-          <label>AI request</label>
-          <div class=\"stack\" style=\"margin-bottom:8px;\">
-            <label style=\"display:flex; align-items:center; gap:6px; font-weight: normal; color: var(--text);\"><input type=\"checkbox\" id=\"includeImages\" checked />Include images</label>
-            <span id=\"queueCount\" style=\"color: var(--muted);\"></span>
-          </div>
-          <ul class=\"queue-list\" id=\"queueList\"></ul>
-          <div class=\"stack\" style=\"margin-top:8px;\">
-            <button id=\"sendAiBtn\" type=\"button\">Generate response</button>
+          <div class="stack" style="margin-top:12px;">
+            <label style="display:flex; align-items:center; gap:6px; font-weight: normal; color: var(--text);"><input type="checkbox" id="includeImages" checked />Include images</label>
+            <button id="sendAiBtn" type="button">Generate response</button>
           </div>
         </div>
       </div>
+      <div class="page-actions">
+        <button class="ghost" type="button" data-page-target="2">Back to capture</button>
+        <button type="button" data-page-target="4" id="jumpToResultBtn" class="secondary">View last result</button>
+      </div>
     </section>
-  </main>
+
+    <section class="page" data-page="4">
+      <div class="page-heading">
+        <div class="title">Page 4 · Result</div>
+        <div class="label-muted">Raw output plus a formatted view for Markdown and LaTeX.</div>
+      </div>
+      <div class="result-grid">
+        <div class="panel">
+          <h3>Raw response</h3>
+          <pre id="aiRawResponse"></pre>
+        </div>
+        <div class="panel">
+          <h3>Formatted view</h3>
+          <div class="rendered-box" id="aiRenderedResponse">Run a request to see results.</div>
+        </div>
+      </div>
+      <div class="page-actions">
+        <button class="ghost" type="button" data-page-target="2">Capture again</button>
+        <button type="button" data-page-target="1">Back to setup</button>
+      </div>
+    </section>
+  </div>
 
   <script>
       let cropBox = null;
@@ -882,6 +964,7 @@ _PAGE_TEMPLATE = """
       let queueItems = [];
       const maxQueueItems = 10;
       let promptEntries = [];
+      let currentPage = 1;
 
     async function refreshWindows() {
       const res = await fetch('/api/windows');
@@ -919,33 +1002,43 @@ _PAGE_TEMPLATE = """
 
       document.getElementById('tesseractPath').value = data.tesseract_path || '';
       updateApiKeyStatus(!!data.api_key_present);
+      if (data.api_key_present) {
+        document.getElementById('apiKey').value = '';
+      }
     }
 
     async function saveSettings() {
-      const path = document.getElementById('tesseractPath').value;
+      const status = document.getElementById('status');
+      status.textContent = 'Saving settings...';
+      const tesseractPath = document.getElementById('tesseractPath').value;
       const apiKey = document.getElementById('apiKey').value;
+      const payload = { tesseract_path: tesseractPath };
+      if (apiKey !== undefined) {
+        payload.api_key = apiKey;
+      }
       const res = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tesseract_path: path, api_key: apiKey })
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
-      const status = document.getElementById('status');
-      status.textContent = data.message || data.error || 'Settings updated';
-      if ('api_key_present' in data) {
-        updateApiKeyStatus(!!data.api_key_present);
+      if (!res.ok) {
+        status.textContent = data.error || 'Unable to save settings.';
+        return;
       }
+      updateApiKeyStatus(!!data.api_key_present);
+      status.textContent = data.message || 'Settings saved.';
     }
 
     async function capture() {
+      const status = document.getElementById('status');
       const select = document.getElementById('windowSelect');
       const title = select.value;
-      const status = document.getElementById('status');
       if (!title) {
-        status.textContent = 'Select a window first.';
+        status.textContent = 'Select a window before capturing.';
         return;
       }
-
+      status.textContent = 'Capturing window...';
       const res = await fetch('/api/capture', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -956,178 +1049,192 @@ _PAGE_TEMPLATE = """
         status.textContent = data.error || 'Capture failed.';
         return;
       }
-
-      status.textContent = data.message || 'Capture ready.';
+      status.textContent = 'Capture ready. You can crop or run OCR.';
       const img = document.getElementById('captureImage');
-      img.src = '/image?cache=' + Date.now();
-      img.onload = () => {
+      img.src = '/image?' + Date.now();
+      document.getElementById('preview-container').style.display = 'inline-block';
+      clearCrop(true);
+      setPage(2);
+    }
+
+    function updateCropOverlay(box) {
+      const overlay = document.getElementById('crop-overlay');
+      if (!box) {
+        overlay.style.display = 'none';
+        return;
+      }
+      overlay.style.display = 'block';
+      overlay.style.left = `${box.x}px`;
+      overlay.style.top = `${box.y}px`;
+      overlay.style.width = `${box.width}px`;
+      overlay.style.height = `${box.height}px`;
+    }
+
+    function setupCropping() {
+      const img = document.getElementById('captureImage');
+      const overlay = document.getElementById('crop-overlay');
+      img.addEventListener('load', () => {
+        const rect = img.getBoundingClientRect();
         naturalWidth = img.naturalWidth;
         naturalHeight = img.naturalHeight;
-      };
-      document.getElementById('preview-container').style.display = 'inline-block';
-      clearCrop();
+        overlay.style.width = `${rect.width}px`;
+        overlay.style.height = `${rect.height}px`;
+      });
+
+      img.addEventListener('mousedown', (event) => {
+        if (!isSelectingCrop) return;
+        const rect = img.getBoundingClientRect();
+        firstCropPoint = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      });
+
+      img.addEventListener('mousemove', (event) => {
+        if (!isSelectingCrop || !firstCropPoint) return;
+        const rect = img.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        const width = x - firstCropPoint.x;
+        const height = y - firstCropPoint.y;
+        const box = {
+          x: Math.min(firstCropPoint.x, x),
+          y: Math.min(firstCropPoint.y, y),
+          width: Math.abs(width),
+          height: Math.abs(height)
+        };
+        updateCropOverlay(box);
+      });
+
+      img.addEventListener('mouseup', (event) => {
+        if (!isSelectingCrop || !firstCropPoint) return;
+        const rect = img.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        const width = x - firstCropPoint.x;
+        const height = y - firstCropPoint.y;
+        cropBox = {
+          x: Math.round(Math.min(firstCropPoint.x, x) * (naturalWidth / rect.width)),
+          y: Math.round(Math.min(firstCropPoint.y, y) * (naturalHeight / rect.height)),
+          width: Math.round(Math.abs(width) * (naturalWidth / rect.width)),
+          height: Math.round(Math.abs(height) * (naturalHeight / rect.height)),
+          display: {
+            x: Math.min(firstCropPoint.x, x),
+            y: Math.min(firstCropPoint.y, y),
+            width: Math.abs(width),
+            height: Math.abs(height)
+          }
+        };
+        updateCropOverlay(cropBox.display);
+        isSelectingCrop = false;
+        firstCropPoint = null;
+        document.getElementById('cropInfo').textContent = `Crop set: (${cropBox.x}, ${cropBox.y}, ${cropBox.width}, ${cropBox.height})`;
+      });
+    }
+
+    function startCropSelection() {
+      if (!document.getElementById('captureImage').src) {
+        document.getElementById('status').textContent = 'Capture first before cropping.';
+        return;
+      }
+      isSelectingCrop = true;
+      document.getElementById('status').textContent = 'Click and drag on the image to set a crop.';
+    }
+
+    function clearCrop(skipMessage = false) {
+      cropBox = null;
+      firstCropPoint = null;
+      isSelectingCrop = false;
+      updateCropOverlay(null);
+      document.getElementById('cropInfo').textContent = '';
+      if (!skipMessage) {
+        document.getElementById('status').textContent = 'Crop cleared.';
+      }
     }
 
     async function runOcr() {
       const status = document.getElementById('status');
-      const payload = cropBox ? { crop: cropBox } : {};
+      status.textContent = 'Running OCR...';
       const res = await fetch('/api/ocr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({ crop_box: cropBox })
       });
       const data = await res.json();
       if (!res.ok) {
         status.textContent = data.error || 'OCR failed.';
         return;
       }
-      status.textContent = 'OCR complete.';
       lastOcrText = data.text || '';
-      lastOcrImage = data.image_data_url || null;
-      document.getElementById('ocrOutput').textContent = lastOcrText;
-      document.getElementById('queueStatus').textContent = '';
+      lastOcrImage = data.image_data || null;
+      document.getElementById('ocrOutput').textContent = lastOcrText || '[No text detected]';
+      status.textContent = 'OCR complete. Add to queue or capture again.';
     }
 
-      function clearCrop() {
-        cropBox = null;
-        firstCropPoint = null;
-        isSelectingCrop = false;
-        document.getElementById('cropInfo').textContent = 'No crop set; OCR will use the full image.';
-        const overlay = document.getElementById('crop-overlay');
-        overlay.style.display = 'none';
+    function goFullscreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        document.exitFullscreen().catch(() => {});
       }
+    }
 
-      function startCropSelection() {
-        if (!naturalWidth || !naturalHeight) {
-          document.getElementById('status').textContent = 'Capture an image before cropping.';
-          return;
-        }
-        isSelectingCrop = true;
-        firstCropPoint = null;
-        document.getElementById('cropInfo').textContent = 'Click the top-left corner, then the bottom-right corner of your crop.';
-        const overlay = document.getElementById('crop-overlay');
-        overlay.style.display = 'none';
-      }
-
-      function setupCropping() {
-        const img = document.getElementById('captureImage');
-        const overlay = document.getElementById('crop-overlay');
-
-        img.addEventListener('load', () => {
-          naturalWidth = img.naturalWidth;
-          naturalHeight = img.naturalHeight;
-        });
-
-        img.addEventListener('click', (ev) => {
-          if (!isSelectingCrop) return;
-          const rect = img.getBoundingClientRect();
-          const point = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
-
-          if (!firstCropPoint) {
-            firstCropPoint = point;
-            document.getElementById('cropInfo').textContent = 'First corner set. Click the bottom-right corner to finish.';
-            overlay.style.display = 'block';
-            overlay.style.left = `${point.x}px`;
-            overlay.style.top = `${point.y}px`;
-            overlay.style.width = '2px';
-            overlay.style.height = '2px';
-            return;
-          }
-
-          const left = Math.min(firstCropPoint.x, point.x);
-          const top = Math.min(firstCropPoint.y, point.y);
-          const width = Math.abs(point.x - firstCropPoint.x);
-          const height = Math.abs(point.y - firstCropPoint.y);
-          firstCropPoint = null;
-          isSelectingCrop = false;
-
-          if (width < 10 || height < 10) {
-            clearCrop();
-            return;
-          }
-
-          overlay.style.display = 'block';
-          overlay.style.left = `${left}px`;
-          overlay.style.top = `${top}px`;
-          overlay.style.width = `${width}px`;
-          overlay.style.height = `${height}px`;
-
-          const scaleX = naturalWidth / img.clientWidth;
-          const scaleY = naturalHeight / img.clientHeight;
-          cropBox = {
-            left: Math.round(left * scaleX),
-            top: Math.round(top * scaleY),
-            right: Math.round((left + width) * scaleX),
-            bottom: Math.round((top + height) * scaleY)
-          };
-          document.getElementById('cropInfo').textContent = `Crop: (${cropBox.left}, ${cropBox.top}) → (${cropBox.right}, ${cropBox.bottom})`;
-        });
-      }
-
-      async function goFullscreen() {
-        const root = document.documentElement;
-        if (!document.fullscreenElement) {
-          await root.requestFullscreen().catch(() => {});
-        } else {
-          await document.exitFullscreen().catch(() => {});
-        }
-      }
-
-      function enforceLandscape() {
+    function enforceLandscape() {
+      try {
         if (window.matchMedia('(max-width: 900px)').matches && 'orientation' in screen && screen.orientation.lock) {
           screen.orientation.lock('landscape').catch(() => {});
         }
-
-        const portrait = window.matchMedia('(orientation: portrait)').matches;
-        document.body.classList.toggle('portrait-warning', portrait);
+      } catch (err) {
+        // Ignore unsupported orientation lock
       }
+      const portrait = window.matchMedia('(orientation: portrait)').matches;
+      document.body.classList.toggle('portrait-warning', portrait);
+    }
 
-      function updateQueueUI() {
-        const list = document.getElementById('queueList');
-        list.innerHTML = '';
-        if (!queueItems.length) {
-          const empty = document.createElement('li');
-          empty.className = 'queue-item';
-          empty.textContent = 'Queue is empty. Save OCR results to build a request.';
-          list.appendChild(empty);
-        } else {
-          queueItems.forEach((item, idx) => {
-            const li = document.createElement('li');
-            li.className = 'queue-item';
-            const title = document.createElement('div');
-            title.className = 'queue-item-title';
-            title.textContent = `Item ${idx + 1}`;
-            const text = document.createElement('div');
-            text.textContent = item.text.slice(0, 140) + (item.text.length > 140 ? '…' : '');
-            li.appendChild(title);
-            li.appendChild(text);
-            list.appendChild(li);
-          });
-        }
-        document.getElementById('queueCount').textContent = `${queueItems.length}/${maxQueueItems} queued`;
+    function updateQueueUI() {
+      const list = document.getElementById('queueList');
+      list.innerHTML = '';
+      if (!queueItems.length) {
+        const empty = document.createElement('li');
+        empty.className = 'queue-item';
+        empty.textContent = 'Queue is empty. Save OCR results to build a request.';
+        list.appendChild(empty);
+      } else {
+        queueItems.forEach((item, idx) => {
+          const li = document.createElement('li');
+          li.className = 'queue-item';
+          const title = document.createElement('div');
+          title.className = 'queue-item-title';
+          title.textContent = `Item ${idx + 1}`;
+          const text = document.createElement('div');
+          text.textContent = item.text.slice(0, 140) + (item.text.length > 140 ? '…' : '');
+          li.appendChild(title);
+          li.appendChild(text);
+          list.appendChild(li);
+        });
       }
+      document.getElementById('queueCount').textContent = `${queueItems.length}/${maxQueueItems} queued`;
+    }
 
-      function addToQueue() {
-        if (!lastOcrText) {
-          document.getElementById('queueStatus').textContent = 'Run OCR before adding to the queue.';
-          return;
-        }
-        if (queueItems.length >= maxQueueItems) {
-          document.getElementById('queueStatus').textContent = 'Queue is full (10 items max).';
-          return;
-        }
-        queueItems.push({ text: lastOcrText, image: lastOcrImage });
-        document.getElementById('queueStatus').textContent = 'Saved to queue. Capture and OCR the next image if needed.';
-        updateQueueUI();
+    function addToQueue() {
+      if (!lastOcrText) {
+        document.getElementById('queueStatus').textContent = 'Run OCR before adding to the queue.';
+        return;
       }
-
-      function clearQueue() {
-        queueItems = [];
-        document.getElementById('queueStatus').textContent = 'Queue cleared.';
-        updateQueueUI();
+      if (queueItems.length >= maxQueueItems) {
+        document.getElementById('queueStatus').textContent = 'Queue is full (10 items max).';
+        return;
       }
+      queueItems.push({ text: lastOcrText, image: lastOcrImage });
+      document.getElementById('queueStatus').textContent = 'Saved to queue. Capture and OCR the next image if needed.';
+      updateQueueUI();
+      setPage(3);
+    }
 
-      async function loadPrompts() {
+    function clearQueue() {
+      queueItems = [];
+      document.getElementById('queueStatus').textContent = 'Queue cleared.';
+      updateQueueUI();
+    }
+
+    async function loadPrompts() {
         const select = document.getElementById('promptSelect');
         const status = document.getElementById('status');
         try {
@@ -1282,6 +1389,19 @@ _PAGE_TEMPLATE = """
         input.value = '';
       }
 
+      function renderMarkdown(content) {
+        const target = document.getElementById('aiRenderedResponse');
+        if (!content) {
+          target.textContent = 'No response yet.';
+          return;
+        }
+        const html = DOMPurify.sanitize(marked.parse(content));
+        target.innerHTML = html;
+        if (window.MathJax && window.MathJax.typesetPromise) {
+          window.MathJax.typesetPromise([target]).catch(() => {});
+        }
+      }
+
       async function sendAiRequest() {
         const status = document.getElementById('status');
         const prompt = document.getElementById('promptText').value.trim();
@@ -1299,13 +1419,38 @@ _PAGE_TEMPLATE = """
         }
         status.textContent = 'AI response ready.';
         document.getElementById('ocrOutput').textContent = data.response || '';
+        document.getElementById('aiRawResponse').textContent = data.response || '';
+        renderMarkdown(data.response || '');
+        setPage(4);
+      }
+
+      function setPage(pageNumber) {
+        currentPage = pageNumber;
+        document.querySelectorAll('.page').forEach(page => {
+          page.classList.toggle('active', Number(page.dataset.page) === pageNumber);
+        });
+        document.querySelectorAll('.step').forEach(step => {
+          step.classList.toggle('active', Number(step.dataset.pageTarget) === pageNumber);
+        });
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+
+      function bindNavigation() {
+        document.querySelectorAll('[data-page-target]').forEach(el => {
+          el.addEventListener('click', () => {
+            const target = Number(el.dataset.pageTarget);
+            if (!Number.isNaN(target)) {
+              setPage(target);
+            }
+          });
+        });
       }
 
     document.getElementById('refreshBtn').addEventListener('click', refreshWindows);
       document.getElementById('captureBtn').addEventListener('click', capture);
       document.getElementById('ocrBtn').addEventListener('click', runOcr);
       document.getElementById('saveSettingsBtn').addEventListener('click', saveSettings);
-      document.getElementById('clearCropBtn').addEventListener('click', clearCrop);
+      document.getElementById('clearCropBtn').addEventListener('click', () => clearCrop());
       document.getElementById('startCropBtn').addEventListener('click', startCropSelection);
       document.getElementById('fullscreenBtn').addEventListener('click', goFullscreen);
       document.getElementById('queueBtn').addEventListener('click', addToQueue);
@@ -1316,13 +1461,15 @@ _PAGE_TEMPLATE = """
       document.getElementById('deletePromptBtn').addEventListener('click', deletePrompt);
       document.getElementById('uploadConfigBtn').addEventListener('click', uploadPromptFile);
       document.getElementById('sendAiBtn').addEventListener('click', sendAiRequest);
+      document.getElementById('jumpToResultBtn').addEventListener('click', () => setPage(4));
       window.addEventListener('orientationchange', enforceLandscape);
       window.addEventListener('resize', enforceLandscape);
 
+      bindNavigation();
       setupCropping();
       loadSettings();
       refreshWindows();
-      clearCrop();
+      clearCrop(true);
       loadPrompts();
       updateQueueUI();
       enforceLandscape();
