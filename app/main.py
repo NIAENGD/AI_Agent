@@ -465,6 +465,56 @@ def _run_ocr(image: "Image.Image") -> str:
     if pytesseract is None:
         raise RuntimeError("pytesseract is not installed.")
 
+
+
+def _parse_crop_request(data: Dict[str, object], image: "Image.Image") -> Tuple[Optional[Tuple[int, int, int, int]], Optional[str]]:
+    """Parse and normalize crop payloads from the browser.
+
+    The UI historically sent `crop_box` as {x, y, width, height}. Some clients
+    may send `crop` as {left, top, right, bottom}. We accept both.
+    """
+    crop = None
+    if isinstance(data, dict):
+        crop = data.get("crop") or data.get("crop_box") or data.get("cropBox")
+
+    if not crop:
+        return None, None
+
+    if not isinstance(crop, dict):
+        return None, "Crop must be an object."
+
+    try:
+        if all(key in crop for key in ("left", "top", "right", "bottom")):
+            l = int(crop.get("left"))  # type: ignore[arg-type]
+            t = int(crop.get("top"))   # type: ignore[arg-type]
+            r = int(crop.get("right")) # type: ignore[arg-type]
+            b = int(crop.get("bottom"))# type: ignore[arg-type]
+        elif all(key in crop for key in ("x", "y", "width", "height")):
+            l = int(crop.get("x"))      # type: ignore[arg-type]
+            t = int(crop.get("y"))      # type: ignore[arg-type]
+            r = l + int(crop.get("width"))   # type: ignore[arg-type]
+            b = t + int(crop.get("height"))  # type: ignore[arg-type]
+        else:
+            return None, "Crop object must contain either left/top/right/bottom or x/y/width/height."
+    except Exception as exc:
+        return None, f"Invalid crop values: {exc}"
+
+    # Ensure left<right and top<bottom
+    if r < l:
+        l, r = r, l
+    if b < t:
+        t, b = b, t
+
+    width, height = image.size
+    l = max(0, min(width, l))
+    r = max(0, min(width, r))
+    t = max(0, min(height, t))
+    b = max(0, min(height, b))
+
+    if r - l <= 0 or b - t <= 0:
+        return None, "Crop area is empty after normalization."
+
+    return (l, t, r, b), None
     return pytesseract.image_to_string(image).strip()
 
 
@@ -553,16 +603,15 @@ def api_ocr() -> tuple[str, int]:
         return jsonify({"error": message}), 400
 
     data = request.get_json(silent=True) or {}
-    crop = data.get("crop")
 
     image_for_ocr = state.captured_image
-    if crop:
-        try:
-            l, t, r, b = [int(value) for value in (crop.get("left"), crop.get("top"), crop.get("right"), crop.get("bottom"))]
-            image_for_ocr = image_for_ocr.crop((l, t, r, b))
-            state.crop_box = (l, t, r, b)
-        except Exception as exc:
-            return jsonify({"error": f"Invalid crop: {exc}"}), 400
+    crop_box, crop_error = _parse_crop_request(data, image_for_ocr)
+    if crop_error:
+        return jsonify({"error": crop_error}), 400
+
+    if crop_box:
+        image_for_ocr = image_for_ocr.crop(crop_box)
+        state.crop_box = crop_box
     else:
         state.crop_box = None
 
@@ -572,7 +621,17 @@ def api_ocr() -> tuple[str, int]:
     except Exception as exc:  # pragma: no cover - user environment specific
         return jsonify({"error": str(exc)}), 500
 
-    return jsonify({"text": text, "image_data_url": data_url})
+    response_payload: Dict[str, object] = {
+        "text": text,
+        # Keep both keys for backward compatibility with older clients.
+        "image_data_url": data_url,
+        "image_data": data_url,
+    }
+    if crop_box:
+        l, t, r, b = crop_box
+        response_payload["crop_box"] = {"left": l, "top": t, "right": r, "bottom": b}
+
+    return jsonify(response_payload)
 
 
 @app.route("/api/configs", methods=["GET", "POST", "PUT", "DELETE"])
@@ -1169,25 +1228,36 @@ _PAGE_TEMPLATE = """
         document.getElementById('status').textContent = 'Crop cleared.';
       }
     }
+async function runOcr() {
+  const status = document.getElementById('status');
+  status.textContent = 'Running OCR...';
 
-    async function runOcr() {
-      const status = document.getElementById('status');
-      status.textContent = 'Running OCR...';
-      const res = await fetch('/api/ocr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ crop_box: cropBox })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        status.textContent = data.error || 'OCR failed.';
-        return;
-      }
-      lastOcrText = data.text || '';
-      lastOcrImage = data.image_data || null;
-      document.getElementById('ocrOutput').textContent = lastOcrText || '[No text detected]';
-      status.textContent = 'OCR complete. Add to queue or capture again.';
-    }
+  const payload = {};
+  if (cropBox) {
+    // Convert UI crop box ({x,y,width,height}) into an explicit crop rectangle.
+    payload.crop = {
+      left: cropBox.x,
+      top: cropBox.y,
+      right: cropBox.x + cropBox.width,
+      bottom: cropBox.y + cropBox.height
+    };
+  }
+
+  const res = await fetch('/api/ocr', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    status.textContent = data.error || 'OCR failed.';
+    return;
+  }
+  lastOcrText = data.text || '';
+  lastOcrImage = data.image_data_url || data.image_data || null;
+  document.getElementById('ocrOutput').textContent = lastOcrText || '[No text detected]';
+  status.textContent = 'OCR complete. Add to queue or capture again.';
+}
 
     function goFullscreen() {
       if (!document.fullscreenElement) {
