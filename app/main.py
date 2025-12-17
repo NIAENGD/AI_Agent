@@ -602,6 +602,13 @@ def api_capture() -> tuple[str, int]:
     return jsonify({"message": "Capture ready."})
 
 
+@app.route("/api/clear_capture", methods=["POST"])
+def api_clear_capture() -> tuple[str, int]:
+    state.captured_image = None
+    state.crop_box = None
+    return jsonify({"message": "Capture cleared."})
+
+
 @app.route("/api/ocr", methods=["POST"])
 def api_ocr() -> tuple[str, int]:
     if state.captured_image is None:
@@ -813,7 +820,7 @@ _PAGE_TEMPLATE = """
       --success: #0a7d4d;
     }
     * { box-sizing: border-box; }
-    body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    body { font-family: Arial, sans-serif; margin: 0; padding: 16px; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; align-items: flex-start; justify-content: center; overflow: auto; }
     h2 { margin: 0; color: var(--accent-strong); }
     h3 { margin: 0 0 6px; color: var(--accent-strong); }
     button { background: var(--accent); color: #f5f5f5; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; }
@@ -823,9 +830,9 @@ _PAGE_TEMPLATE = """
     label { display: block; margin-bottom: 6px; font-weight: bold; color: var(--accent-strong); }
     input, select, textarea { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); box-sizing: border-box; font-size: 14px; background: #fdfdfd; color: var(--text); }
     textarea { min-height: 90px; }
-    .frame { width: min(100vw, calc(100vh * 16 / 9)); height: min(100vh, calc(100vw * 9 / 16)); background: linear-gradient(135deg, #f7f7f7 0%, #ededed 100%); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); padding: 12px; display: flex; align-items: stretch; justify-content: center; }
-    .viewport { position: relative; width: 100%; height: 100%; }
-    .page { display: none; position: absolute; inset: 0; padding: 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: inset 0 1px 2px rgba(0,0,0,0.04); overflow: auto; }
+    .frame { width: min(1200px, 100%); background: linear-gradient(135deg, #f7f7f7 0%, #ededed 100%); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); padding: 12px; display: flex; align-items: stretch; justify-content: center; }
+    .viewport { position: relative; width: 100%; min-height: calc(100vh - 32px); }
+    .page { display: none; position: relative; padding: 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: inset 0 1px 2px rgba(0,0,0,0.04); overflow: auto; min-height: inherit; }
     .page.active { display: flex; flex-direction: column; gap: 12px; }
     .page-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
     .page-heading .title { font-size: 18px; font-weight: bold; color: var(--accent-strong); }
@@ -836,9 +843,10 @@ _PAGE_TEMPLATE = """
     #status { position: absolute; left: 16px; bottom: 16px; padding: 8px 12px; background: rgba(0,0,0,0.7); color: #f5f5f5; border-radius: 10px; max-width: calc(100% - 32px); font-size: 14px; }
     #orientationNotice { position: absolute; top: 16px; right: 16px; padding: 8px 12px; background: #5a5a5a; color: #f5f5f5; border-radius: 8px; display: none; }
     body.portrait-warning #orientationNotice { display: block; }
-    #preview-container { position: relative; display: inline-block; max-width: 100%; }
+    #preview-container { position: relative; display: none; max-width: 80%; }
     #crop-overlay { position: absolute; border: 2px dashed #707070; background: rgba(112, 112, 112, 0.2); display: none; pointer-events: none; }
-    #captureImage { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
+    #captureImage { width: 100%; max-width: 100%; border-radius: 8px; border: 1px solid var(--border); height: auto; }
+    #capturePreview { display: none; width: 80%; max-width: 640px; border-radius: 8px; border: 1px solid var(--border); }
     pre { background: var(--highlight); padding: 12px; border-radius: 8px; white-space: pre-wrap; border: 1px solid var(--border); }
     .queue-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
     .queue-item { border: 1px solid var(--border); padding: 8px; border-radius: 8px; background: var(--highlight); }
@@ -869,7 +877,6 @@ _PAGE_TEMPLATE = """
             <select id="windowSelect"></select>
             <div class="stack" style="margin-top:8px;">
               <button id="refreshBtn" type="button">Refresh</button>
-              <button id="captureBtn" type="button">Capture</button>
             </div>
           </div>
           <div class="panel">
@@ -897,19 +904,50 @@ _PAGE_TEMPLATE = """
       <section class="page" data-page="2">
         <div class="page-heading">
           <div class="title">Page 2 · Capture</div>
-          <div class="label-muted">Grab an image, crop it, and review OCR before queuing.</div>
+          <div class="label-muted">Run a capture, preview it, and head to cropping.</div>
+        </div>
+        <div class="grid two">
+          <div class="panel">
+            <h2>Capture controls</h2>
+            <p class="label-muted">Selected window: <span id="selectedWindowLabel">None</span></p>
+            <div class="stack" style="margin-top:8px;">
+              <button id="captureBtn" type="button">Capture</button>
+              <button class="ghost" type="button" data-page-target="3">Go to crop</button>
+            </div>
+            <div style="margin-top:8px;">
+              <img id="capturePreview" alt="Capture preview" />
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Notes</h2>
+            <p class="label-muted">Capture once, then continue to the dedicated crop and OCR pages.</p>
+            <p class="label-muted">You can return here anytime to retake the shot.</p>
+          </div>
+        </div>
+        <div class="page-nav">
+          <div class="nav-buttons">
+            <button class="ghost" type="button" data-page-target="1">Back to setup</button>
+            <button type="button" data-page-target="3">Next: crop & OCR</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" data-page="3">
+        <div class="page-heading">
+          <div class="title">Page 3 · Crop & OCR</div>
+          <div class="label-muted">Crop your capture and review OCR before saving.</div>
         </div>
         <div class="grid two">
           <div class="panel">
             <h2>Preview & crop</h2>
             {% if has_capture %}
-            <div id="preview-container">
+            <div id="preview-container" style="display:inline-block;">
               <img id="captureImage" src="/image" alt="Capture preview" />
               <div id="crop-overlay"></div>
             </div>
             {% else %}
-            <div>No capture yet. Select a window and click Capture.</div>
-            <div id="preview-container" style="display:none;">
+            <p class="label-muted">No capture yet. Use Capture to grab a window first.</p>
+            <div id="preview-container">
               <img id="captureImage" src="" alt="Capture preview" />
               <div id="crop-overlay"></div>
             </div>
@@ -933,15 +971,15 @@ _PAGE_TEMPLATE = """
         </div>
         <div class="page-nav">
           <div class="nav-buttons">
-            <button class="ghost" type="button" data-page-target="1">Back to setup</button>
-            <button type="button" data-page-target="3">Next: submit</button>
+            <button class="ghost" type="button" data-page-target="2">Back to capture</button>
+            <button type="button" data-page-target="4">Next: submit</button>
           </div>
         </div>
       </section>
 
-      <section class="page" data-page="3">
+      <section class="page" data-page="4">
         <div class="page-heading">
-          <div class="title">Page 3 · Submit</div>
+          <div class="title">Page 4 · Submit</div>
           <div class="label-muted">Queue items on the left, prompt and options on the right.</div>
         </div>
         <div class="grid two">
@@ -949,7 +987,7 @@ _PAGE_TEMPLATE = """
             <h2>Queued captures</h2>
             <div class="stack" style="margin-bottom:8px;">
               <span class="tag" id="queueCount">0/10 queued</span>
-              <span class="label-muted">Add more items from the Capture page if needed.</span>
+              <span class="label-muted">Add more items from the Crop page if needed.</span>
             </div>
             <ul class="queue-list" id="queueList"></ul>
           </div>
@@ -979,15 +1017,15 @@ _PAGE_TEMPLATE = """
         </div>
         <div class="page-nav">
           <div class="nav-buttons">
-            <button class="ghost" type="button" data-page-target="2">Back to capture</button>
-            <button type="button" data-page-target="4" id="jumpToResultBtn" class="secondary">View last result</button>
+            <button class="ghost" type="button" data-page-target="3">Back to crop</button>
+            <button type="button" data-page-target="5" id="jumpToResultBtn" class="secondary">View last result</button>
           </div>
         </div>
       </section>
 
-      <section class="page" data-page="4">
+      <section class="page" data-page="5">
         <div class="page-heading">
-          <div class="title">Page 4 · Result</div>
+          <div class="title">Page 5 · Result</div>
           <div class="label-muted">Raw output plus a formatted view for Markdown and LaTeX.</div>
         </div>
         <div class="result-grid">
@@ -1043,6 +1081,14 @@ _PAGE_TEMPLATE = """
         select.appendChild(option);
       });
       status.textContent = `Found ${data.windows.length} window(s).`;
+      updateSelectedWindowLabel();
+    }
+
+    function updateSelectedWindowLabel() {
+      const select = document.getElementById('windowSelect');
+      const label = document.getElementById('selectedWindowLabel');
+      if (!select || !label) return;
+      label.textContent = select.value || 'None';
     }
 
     function updateApiKeyStatus(isPresent) {
@@ -1108,10 +1154,16 @@ _PAGE_TEMPLATE = """
         status.textContent = data.error || 'Capture failed.';
         return;
       }
-      status.textContent = 'Capture ready. You can crop or run OCR.';
+      status.textContent = 'Capture ready. Continue to crop & OCR when you are ready.';
       const img = document.getElementById('captureImage');
-      img.src = '/image?' + Date.now();
+      const newSrc = '/image?' + Date.now();
+      img.src = newSrc;
       document.getElementById('preview-container').style.display = 'inline-block';
+      const preview = document.getElementById('capturePreview');
+      if (preview) {
+        preview.src = newSrc;
+        preview.style.display = 'block';
+      }
       clearCrop(true);
       setPage(2);
     }
@@ -1164,8 +1216,8 @@ _PAGE_TEMPLATE = """
         activePointerId = null;
         pointerMoved = false;
         document.getElementById('cropInfo').textContent = `Crop set: (${cropBox.x}, ${cropBox.y}, ${cropBox.width}, ${cropBox.height})`;
-        document.getElementById('status').textContent = 'Crop saved. Run OCR to continue.';
-      }
+      document.getElementById('status').textContent = 'Crop saved. Run OCR to continue.';
+    }
       img.addEventListener('load', () => {
         const rect = img.getBoundingClientRect();
         naturalWidth = img.naturalWidth;
@@ -1213,6 +1265,19 @@ _PAGE_TEMPLATE = """
         }
         img.releasePointerCapture(event.pointerId);
       });
+    }
+
+    function hydratePreviewOnLoad() {
+      const img = document.getElementById('captureImage');
+      const container = document.getElementById('preview-container');
+      const preview = document.getElementById('capturePreview');
+      if (img && img.getAttribute('src')) {
+        container.style.display = 'inline-block';
+        if (preview) {
+          preview.src = img.getAttribute('src');
+          preview.style.display = 'block';
+        }
+      }
     }
 
     function startCropSelection() {
@@ -1520,7 +1585,33 @@ async function runOcr() {
         document.getElementById('ocrOutput').textContent = data.response || '';
         document.getElementById('aiRawResponse').textContent = data.response || '';
         renderMarkdown(data.response || '');
-        setPage(4);
+        await clearAfterResult();
+        setPage(5);
+      }
+
+      async function clearAfterResult() {
+        queueItems = [];
+        updateQueueUI();
+        lastOcrText = '';
+        lastOcrImage = null;
+        clearCrop(true);
+        document.getElementById('ocrOutput').textContent = '';
+        document.getElementById('queueStatus').textContent = '';
+        const preview = document.getElementById('capturePreview');
+        if (preview) {
+          preview.src = '';
+          preview.style.display = 'none';
+        }
+        const img = document.getElementById('captureImage');
+        if (img) {
+          img.src = '';
+        }
+        document.getElementById('preview-container').style.display = 'none';
+        try {
+          await fetch('/api/clear_capture', { method: 'POST' });
+        } catch (err) {
+          // ignore
+        }
       }
 
       function setPage(pageNumber) {
@@ -1530,9 +1621,9 @@ async function runOcr() {
         });
       }
 
-      function bindNavigation() {
-        document.querySelectorAll('[data-page-target]').forEach(el => {
-          el.addEventListener('click', () => {
+    function bindNavigation() {
+      document.querySelectorAll('[data-page-target]').forEach(el => {
+        el.addEventListener('click', () => {
             const target = Number(el.dataset.pageTarget);
             if (!Number.isNaN(target)) {
               setPage(target);
@@ -1541,7 +1632,8 @@ async function runOcr() {
         });
       }
 
-    document.getElementById('refreshBtn').addEventListener('click', refreshWindows);
+      document.getElementById('refreshBtn').addEventListener('click', refreshWindows);
+      document.getElementById('windowSelect').addEventListener('change', updateSelectedWindowLabel);
       document.getElementById('captureBtn').addEventListener('click', capture);
       document.getElementById('ocrBtn').addEventListener('click', runOcr);
       document.getElementById('saveSettingsBtn').addEventListener('click', saveSettings);
@@ -1556,7 +1648,7 @@ async function runOcr() {
       document.getElementById('deletePromptBtn').addEventListener('click', deletePrompt);
       document.getElementById('uploadConfigBtn').addEventListener('click', uploadPromptFile);
       document.getElementById('sendAiBtn').addEventListener('click', sendAiRequest);
-      document.getElementById('jumpToResultBtn').addEventListener('click', () => setPage(4));
+      document.getElementById('jumpToResultBtn').addEventListener('click', () => setPage(5));
       window.addEventListener('orientationchange', enforceLandscape);
       window.addEventListener('resize', enforceLandscape);
 
@@ -1568,6 +1660,7 @@ async function runOcr() {
       loadPrompts();
       updateQueueUI();
       enforceLandscape();
+      hydratePreviewOnLoad();
     </script>
   </body>
 </html>
