@@ -6,3 +6,4 @@ Pillow==10.4.0
 pywin32==310; platform_system == "Windows"
 openai
 httpx
+google-genai
