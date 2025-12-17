@@ -1140,14 +1140,11 @@ _PAGE_TEMPLATE = """
         const point = pointFromEvent(event);
         if (pointerMoved) {
           commitCrop(point);
+        } else {
+          // The first tap has finished without movement; allow a second tap to set the opposite corner.
+          activePointerId = null;
         }
         img.releasePointerCapture(event.pointerId);
-      });
-
-      img.addEventListener('click', (event) => {
-        if (!isSelectingCrop || !firstCropPoint || pointerMoved) return;
-        const point = pointFromEvent(event);
-        commitCrop(point);
       });
     }
 
