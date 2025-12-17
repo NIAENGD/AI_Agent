@@ -108,6 +108,9 @@ app = Flask(__name__)
 CONFIG_DIR = Path(__file__).resolve().parent / "configs"
 CONFIG_FILE = CONFIG_DIR / "prompts.txt"
 API_KEY_FILE = CONFIG_DIR / "api_key.txt"
+GOOGLE_API_KEY_FILE = CONFIG_DIR / "google_api_key.txt"
+PROVIDER_FILE = CONFIG_DIR / "ai_provider.txt"
+DEFAULT_PROVIDER = "openai"
 DEFAULT_PROMPT = {"title": "Example", "prompt": "This is an example prompt"}
 
 
@@ -245,6 +248,53 @@ def _save_api_key(raw_key: str) -> bool:
     return True
 
 
+def _load_google_api_key() -> Optional[str]:
+    env_key = os.environ.get("GOOGLE_API_KEY")
+    if env_key and env_key.strip():
+        return env_key.strip()
+
+    if GOOGLE_API_KEY_FILE.exists():
+        key = GOOGLE_API_KEY_FILE.read_text(encoding="utf-8").strip()
+        if key:
+            return key
+    return None
+
+
+def _save_google_api_key(raw_key: str) -> bool:
+    _ensure_config_dir()
+    key = (raw_key or "").strip()
+    if not key:
+        if GOOGLE_API_KEY_FILE.exists():
+            GOOGLE_API_KEY_FILE.unlink()
+        return False
+
+    GOOGLE_API_KEY_FILE.write_text(key, encoding="utf-8")
+    return True
+
+
+def _load_ai_provider() -> str:
+    env_value = os.environ.get("AI_AGENT_PROVIDER")
+    if env_value and env_value.lower() in {"openai", "google"}:
+        return env_value.lower()
+
+    if PROVIDER_FILE.exists():
+        stored = PROVIDER_FILE.read_text(encoding="utf-8").strip().lower()
+        if stored in {"openai", "google"}:
+            return stored
+
+    return DEFAULT_PROVIDER
+
+
+def _save_ai_provider(provider: str) -> str:
+    normalized = (provider or "").strip().lower()
+    if normalized not in {"openai", "google"}:
+        return _load_ai_provider()
+
+    _ensure_config_dir()
+    PROVIDER_FILE.write_text(normalized, encoding="utf-8")
+    return normalized
+
+
 def _parse_prompt_lines(raw: str) -> List[Dict[str, str]]:
     prompts: List[Dict[str, str]] = []
     for line in raw.splitlines():
@@ -297,6 +347,27 @@ def _image_to_data_url(image: "Image.Image") -> str:
     return f"data:image/png;base64,{encoded}"
 
 
+def _data_url_to_inline_data(data_url: str) -> Optional[Dict[str, str]]:
+    if not data_url.startswith("data:"):
+        return None
+
+    try:
+        header, encoded = data_url.split(",", 1)
+    except ValueError:
+        return None
+
+    mime_type = "image/png"
+    if ";base64" in header:
+        mime_type = header.split("data:", 1)[1].split(";", 1)[0] or mime_type
+
+    try:
+        decoded = base64.b64decode(encoded)
+    except Exception:
+        return None
+
+    return {"mime_type": mime_type, "data": base64.b64encode(decoded).decode("ascii")}
+
+
 def _get_openai_client():  # type: ignore[return-type]
     if importlib.util.find_spec("openai") is None:
         return None, "OpenAI SDK is not installed. Please add it to requirements.txt."
@@ -335,6 +406,28 @@ def _get_openai_client():  # type: ignore[return-type]
                 "is incompatible. Please install httpx<1.0.",
             )
         return None, f"Unable to initialize OpenAI client: {exc}"
+
+
+def _get_google_client():  # type: ignore[return-type]
+    if importlib.util.find_spec("google.genai") is None:
+        return None, (
+            "Google Generative AI SDK is not installed. Please add google-genai "
+            "to requirements.txt."
+        )
+
+    try:
+        from google import genai
+    except Exception as exc:  # pragma: no cover - import failure
+        return None, f"Unable to import Google Generative AI client: {exc}"
+
+    api_key = _load_google_api_key()
+    if not api_key:
+        return None, "Set GOOGLE_API_KEY or save a key for Google AI in settings."
+
+    try:
+        return genai.Client(api_key=api_key), None
+    except Exception as exc:  # pragma: no cover - network/env specific
+        return None, f"Unable to initialize Google Generative AI client: {exc}"
 
 
 # ---------- Window helpers ----------
@@ -549,7 +642,9 @@ def api_settings() -> tuple[str, int]:
             {
                 "tesseract_path": state.tesseract_path,
                 "api_key_present": _load_api_key() is not None,
+                "google_api_key_present": _load_google_api_key() is not None,
                 "api_key_path": str(API_KEY_FILE),
+                "provider": _load_ai_provider(),
             }
         )
 
@@ -558,9 +653,16 @@ def api_settings() -> tuple[str, int]:
     state.tesseract_path = path or _detect_local_tesseract()
     _apply_tesseract_path()
 
+    provider = data.get("provider") or _load_ai_provider()
+    provider = _save_ai_provider(provider)
+
     api_key_present = None
+    google_api_key_present = None
     if "api_key" in data:
-        api_key_present = _save_api_key(str(data.get("api_key", "")))
+        if provider == "google":
+            google_api_key_present = _save_google_api_key(str(data.get("api_key", "")))
+        else:
+            api_key_present = _save_api_key(str(data.get("api_key", "")))
 
     return jsonify(
         {
@@ -569,6 +671,10 @@ def api_settings() -> tuple[str, int]:
             "api_key_present": api_key_present
             if api_key_present is not None
             else _load_api_key() is not None,
+            "google_api_key_present": google_api_key_present
+            if google_api_key_present is not None
+            else _load_google_api_key() is not None,
+            "provider": provider,
         }
     )
 
@@ -747,6 +853,36 @@ def api_ai_response() -> tuple[str, int]:
             if image_data:
                 content.append({"type": "input_image", "image_url": image_data})
 
+    provider = _load_ai_provider()
+    if provider == "google":
+        client, error = _get_google_client()
+        if error:
+            return jsonify({"error": error}), 400
+
+        model = os.environ.get("AI_AGENT_GOOGLE_MODEL", "gemini-3-pro-preview")
+        parts: List[Dict[str, str]] = []
+        for entry in content:
+            if entry.get("type") == "input_text" and entry.get("text"):
+                parts.append({"text": entry["text"]})
+            if include_images and entry.get("type") == "input_image":
+                inline = _data_url_to_inline_data(entry.get("image_url", ""))
+                if inline:
+                    parts.append({"inline_data": inline})
+
+        if not parts:
+            parts.append({"text": "Please review the provided OCR text and images."})
+
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=[{"role": "user", "parts": parts}],
+            )
+        except Exception as exc:  # pragma: no cover - network/env specific
+            return jsonify({"error": str(exc)}), 500
+
+        text = getattr(response, "output_text", None) or getattr(response, "text", "")
+        return jsonify({"response": text or ""})
+
     client, error = _get_openai_client()
     if error:
         return jsonify({"error": error}), 400
@@ -882,12 +1018,22 @@ _PAGE_TEMPLATE = r"""
           </div>
           <div class="panel">
             <h2>App settings</h2>
+            <label for="aiProvider">AI provider</label>
+            <select id="aiProvider">
+              <option value="openai">OpenAI</option>
+              <option value="google">Google Gemini</option>
+            </select>
+            <div class="label-muted" style="margin-bottom:6px;">Switch between OpenAI and Google AI for responses.</div>
             <label for="tesseractPath">Tesseract executable</label>
             <input id="tesseractPath" type="text" placeholder="Path to tesseract.exe" value="{{ tesseract_path }}" />
-            <label for="apiKey" style="margin-top:8px;">OpenAI API key</label>
+            <label for="apiKey" style="margin-top:8px;">API key</label>
             <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
+            <div class="stack" style="margin: 6px 0 0 0; align-items: flex-start;">
+              <input type="checkbox" id="clearApiKey" />
+              <label for="clearApiKey" class="label-muted" style="font-weight: normal; margin: 0;">Clear stored API key for the selected provider</label>
+            </div>
             <div id="apiKeyStatus" class="label-muted" style="margin-top:6px;">No API key saved.</div>
-            <div class="label-muted" style="margin-top:4px;">Stored in configs/api_key.txt. Leave blank to clear.</div>
+            <div class="label-muted" style="margin-top:4px;">Keys are stored per provider in the configs folder. Leave the field blank to keep the saved key.</div>
             <div style="margin-top:8px;">
               <button id="saveSettingsBtn" type="button">Save settings</button>
             </div>
@@ -1059,6 +1205,8 @@ _PAGE_TEMPLATE = r"""
       const maxQueueItems = 10;
       let promptEntries = [];
       let currentPage = 1;
+      let openaiKeyPresent = false;
+      let googleKeyPresent = false;
 
       marked.setOptions({ gfm: true, breaks: true, mangle: false, headerIds: false });
 
@@ -1128,9 +1276,21 @@ _PAGE_TEMPLATE = r"""
       label.textContent = select.value || 'None';
     }
 
-    function updateApiKeyStatus(isPresent) {
+    function updateApiKeyStatus() {
       const apiKeyStatus = document.getElementById('apiKeyStatus');
-      apiKeyStatus.textContent = isPresent ? 'API key saved.' : 'No API key saved.';
+      const providerSelect = document.getElementById('aiProvider');
+      const apiKeyLabel = document.querySelector('label[for="apiKey"]');
+      const provider = providerSelect ? providerSelect.value : 'openai';
+      const hasKey = provider === 'google' ? googleKeyPresent : openaiKeyPresent;
+      const providerName = provider === 'google' ? 'Google AI' : 'OpenAI';
+      apiKeyStatus.textContent = hasKey ? `${providerName} API key saved.` : `No ${providerName} API key saved.`;
+      if (apiKeyLabel) {
+        apiKeyLabel.textContent = `${providerName} API key`;
+      }
+      const apiKeyInput = document.getElementById('apiKey');
+      if (apiKeyInput) {
+        apiKeyInput.placeholder = provider === 'google' ? 'Google API key' : 'sk-...';
+      }
     }
 
     async function loadSettings() {
@@ -1143,19 +1303,25 @@ _PAGE_TEMPLATE = r"""
       }
 
       document.getElementById('tesseractPath').value = data.tesseract_path || '';
-      updateApiKeyStatus(!!data.api_key_present);
-      if (data.api_key_present) {
-        document.getElementById('apiKey').value = '';
-      }
+      openaiKeyPresent = !!data.api_key_present;
+      googleKeyPresent = !!data.google_api_key_present;
+      document.getElementById('aiProvider').value = data.provider || 'openai';
+      updateApiKeyStatus();
+      document.getElementById('apiKey').value = '';
+      document.getElementById('clearApiKey').checked = false;
     }
 
     async function saveSettings() {
       const status = document.getElementById('status');
       status.textContent = 'Saving settings...';
       const tesseractPath = document.getElementById('tesseractPath').value;
-      const apiKey = document.getElementById('apiKey').value;
-      const payload = { tesseract_path: tesseractPath };
-      if (apiKey !== undefined) {
+      const apiKey = document.getElementById('apiKey').value.trim();
+      const provider = document.getElementById('aiProvider').value;
+      const clearKey = document.getElementById('clearApiKey').checked;
+      const payload = { tesseract_path: tesseractPath, provider };
+      if (clearKey) {
+        payload.api_key = '';
+      } else if (apiKey) {
         payload.api_key = apiKey;
       }
       const res = await fetch('/api/settings', {
@@ -1168,7 +1334,12 @@ _PAGE_TEMPLATE = r"""
         status.textContent = data.error || 'Unable to save settings.';
         return;
       }
-      updateApiKeyStatus(!!data.api_key_present);
+      openaiKeyPresent = !!data.api_key_present;
+      googleKeyPresent = !!data.google_api_key_present;
+      document.getElementById('aiProvider').value = data.provider || provider;
+      document.getElementById('clearApiKey').checked = false;
+      document.getElementById('apiKey').value = '';
+      updateApiKeyStatus();
       status.textContent = data.message || 'Settings saved.';
     }
 
@@ -1683,6 +1854,11 @@ async function runOcr() {
       document.getElementById('captureBtn').addEventListener('click', capture);
       document.getElementById('ocrBtn').addEventListener('click', runOcr);
       document.getElementById('saveSettingsBtn').addEventListener('click', saveSettings);
+      document.getElementById('aiProvider').addEventListener('change', () => {
+        document.getElementById('apiKey').value = '';
+        document.getElementById('clearApiKey').checked = false;
+        updateApiKeyStatus();
+      });
       document.getElementById('clearCropBtn').addEventListener('click', () => clearCrop());
       document.getElementById('startCropBtn').addEventListener('click', startCropSelection);
       document.getElementById('fullscreenBtn').addEventListener('click', goFullscreen);
