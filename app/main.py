@@ -735,7 +735,7 @@ _PAGE_TEMPLATE = """
   <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
   <style>
     :root {
-      --bg: #f2f2f2;
+      --bg: #e8e8e8;
       --panel: #ffffff;
       --border: #cfcfcf;
       --text: #1f1f1f;
@@ -746,10 +746,8 @@ _PAGE_TEMPLATE = """
       --success: #0a7d4d;
     }
     * { box-sizing: border-box; }
-    body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: var(--bg); color: var(--text); }
-    header { background: var(--accent-strong); color: #f5f5f5; padding: 16px 24px; }
-    h1 { margin: 0 0 6px; }
-    h2 { margin-top: 0; color: var(--accent-strong); }
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    h2 { margin: 0; color: var(--accent-strong); }
     h3 { margin: 0 0 6px; color: var(--accent-strong); }
     button { background: var(--accent); color: #f5f5f5; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; }
     button.secondary { background: var(--muted); color: #f5f5f5; }
@@ -758,19 +756,18 @@ _PAGE_TEMPLATE = """
     label { display: block; margin-bottom: 6px; font-weight: bold; color: var(--accent-strong); }
     input, select, textarea { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); box-sizing: border-box; font-size: 14px; background: #fdfdfd; color: var(--text); }
     textarea { min-height: 90px; }
-    .shell { padding: 16px; max-width: 1400px; margin: 0 auto; }
-    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
-    .panel + .panel { margin-top: 12px; }
-    .page { display: none; flex-direction: column; gap: 12px; aspect-ratio: 16 / 9; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; box-shadow: 0 1px 6px rgba(0,0,0,0.08); overflow: auto; }
-    .page.active { display: flex; }
-    .page-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .frame { width: min(100vw, calc(100vh * 16 / 9)); height: min(100vh, calc(100vw * 9 / 16)); background: linear-gradient(135deg, #f7f7f7 0%, #ededed 100%); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); padding: 12px; display: flex; align-items: stretch; justify-content: center; }
+    .viewport { position: relative; width: 100%; height: 100%; }
+    .page { display: none; position: absolute; inset: 0; padding: 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: inset 0 1px 2px rgba(0,0,0,0.04); overflow: auto; }
+    .page.active { display: flex; flex-direction: column; gap: 12px; }
+    .page-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
     .page-heading .title { font-size: 18px; font-weight: bold; color: var(--accent-strong); }
-    .page-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     .grid { display: grid; gap: 12px; }
     .grid.two { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
     .stack { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    #status { color: var(--accent-strong); font-weight: bold; margin-top: 4px; }
-    #orientationNotice { display: none; margin-top: 10px; background: #5a5a5a; color: #f5f5f5; padding: 8px 12px; border-radius: 8px; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    #status { position: absolute; left: 16px; bottom: 16px; padding: 8px 12px; background: rgba(0,0,0,0.7); color: #f5f5f5; border-radius: 10px; max-width: calc(100% - 32px); font-size: 14px; }
+    #orientationNotice { position: absolute; top: 16px; right: 16px; padding: 8px 12px; background: #5a5a5a; color: #f5f5f5; border-radius: 8px; display: none; }
     body.portrait-warning #orientationNotice { display: block; }
     #preview-container { position: relative; display: inline-block; max-width: 100%; }
     #crop-overlay { position: absolute; border: 2px dashed #707070; background: rgba(112, 112, 112, 0.2); display: none; pointer-events: none; }
@@ -779,178 +776,171 @@ _PAGE_TEMPLATE = """
     .queue-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
     .queue-item { border: 1px solid var(--border); padding: 8px; border-radius: 8px; background: var(--highlight); }
     .queue-item-title { font-weight: bold; color: var(--accent-strong); margin-bottom: 4px; }
-    .stepper { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 8px; margin: 16px 0; }
-    .step { background: #e6e6e6; color: var(--accent-strong); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); display: flex; align-items: center; gap: 8px; cursor: pointer; justify-content: center; text-align: center; }
-    .step.active { background: var(--accent); color: #f5f5f5; border-color: var(--accent); }
     .label-muted { color: var(--muted); font-size: 13px; }
     .result-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
     .rendered-box { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 12px; min-height: 240px; overflow: auto; }
     .tag { display: inline-block; background: var(--highlight); border-radius: 6px; padding: 4px 8px; border: 1px solid var(--border); font-size: 12px; }
+    .page-nav { margin-top: auto; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 8px; border-top: 1px solid var(--border); }
+    .nav-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
   </style>
 </head>
 <body>
-  <header>
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-      <div>
-        <h1 style="margin-bottom:4px;">AI Agent - Web Capture & OCR</h1>
-        <div>One-screen flow: Setup → Capture → Submit → Result.</div>
-      </div>
-      <div style="display:flex; gap:8px;">
-        <button id="fullscreenBtn" type="button" class="secondary">Fullscreen</button>
-      </div>
-    </div>
-    <div id="orientationNotice">Best viewed in landscape on mobile. Rotate your device if needed.</div>
-  </header>
-  <div class="shell">
-    <div class="stepper">
-      <div class="step active" data-page-target="1">1. Setup</div>
-      <div class="step" data-page-target="2">2. Capture</div>
-      <div class="step" data-page-target="3">3. Submit</div>
-      <div class="step" data-page-target="4">4. Result</div>
-    </div>
-    <div id="status"></div>
+  <div class="frame">
+    <div class="viewport">
+      <div id="orientationNotice">Best viewed in landscape on mobile. Rotate your device if needed.</div>
+      <div id="status">Ready.</div>
 
-    <section class="page active" data-page="1">
-      <div class="page-heading">
-        <div class="title">Page 1 · Setup and configuration</div>
-        <div class="label-muted">Choose a target window and confirm settings.</div>
-      </div>
-      <div class="grid two">
-        <div class="panel">
-          <h2>Window selection</h2>
-          <label for="windowSelect">Open windows</label>
-          <select id="windowSelect"></select>
-          <div class="stack" style="margin-top:8px;">
-            <button id="refreshBtn" type="button">Refresh</button>
-            <button id="captureBtn" type="button">Capture</button>
-          </div>
+      <section class="page active" data-page="1">
+        <div class="page-heading">
+          <div class="title">Page 1 · Setup and configuration</div>
+          <div class="label-muted">Choose a target window and confirm settings.</div>
         </div>
-        <div class="panel">
-          <h2>App settings</h2>
-          <label for="tesseractPath">Tesseract executable</label>
-          <input id="tesseractPath" type="text" placeholder="Path to tesseract.exe" value="{{ tesseract_path }}" />
-          <label for="apiKey" style="margin-top:8px;">OpenAI API key</label>
-          <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
-          <div id="apiKeyStatus" class="label-muted" style="margin-top:6px;">No API key saved.</div>
-          <div class="label-muted" style="margin-top:4px;">Stored in configs/api_key.txt. Leave blank to clear.</div>
-          <div style="margin-top:8px;">
-            <button id="saveSettingsBtn" type="button">Save settings</button>
-          </div>
-          <div class="label-muted" style="margin-top:10px;">Detected crop box: {{ crop_box if crop_box else 'None' }}</div>
-        </div>
-      </div>
-      <div class="page-actions">
-        <button class="ghost" type="button" data-page-target="2">Go to capture</button>
-      </div>
-    </section>
-
-    <section class="page" data-page="2">
-      <div class="page-heading">
-        <div class="title">Page 2 · Capture</div>
-        <div class="label-muted">Grab an image, crop it, and review OCR before queuing.</div>
-      </div>
-      <div class="grid two">
-        <div class="panel">
-          <h2>Preview & crop</h2>
-          {% if has_capture %}
-          <div id="preview-container">
-            <img id="captureImage" src="/image" alt="Capture preview" />
-            <div id="crop-overlay"></div>
-          </div>
-          {% else %}
-          <div>No capture yet. Select a window and click Capture.</div>
-          <div id="preview-container" style="display:none;">
-            <img id="captureImage" src="" alt="Capture preview" />
-            <div id="crop-overlay"></div>
-          </div>
-          {% endif %}
-          <div class="stack" style="margin-top: 12px;">
-            <button id="startCropBtn" type="button">Select crop area</button>
-            <button id="clearCropBtn" type="button" class="secondary">Clear crop</button>
-            <button id="ocrBtn" type="button">Run OCR</button>
-          </div>
-          <div id="cropInfo" class="label-muted" style="margin-top:6px;"></div>
-        </div>
-        <div class="panel">
-          <h2>OCR output</h2>
-          <pre id="ocrOutput"></pre>
-          <div class="stack" style="margin-top:8px;">
-            <button id="queueBtn" type="button">Save to queue</button>
-            <button id="clearQueueBtn" type="button" class="secondary">Clear queue</button>
-          </div>
-          <div id="queueStatus" class="label-muted" style="margin-top:6px;"></div>
-        </div>
-      </div>
-      <div class="page-actions">
-        <button class="ghost" type="button" data-page-target="1">Back to setup</button>
-        <button type="button" data-page-target="3">Next: submit</button>
-      </div>
-    </section>
-
-    <section class="page" data-page="3">
-      <div class="page-heading">
-        <div class="title">Page 3 · Submit</div>
-        <div class="label-muted">Queue items on the left, prompt and options on the right.</div>
-      </div>
-      <div class="grid two">
-        <div class="panel">
-          <h2>Queued captures</h2>
-          <div class="stack" style="margin-bottom:8px;">
-            <span class="tag" id="queueCount">0/10 queued</span>
-            <span class="label-muted">Add more items from the Capture page if needed.</span>
-          </div>
-          <ul class="queue-list" id="queueList"></ul>
-        </div>
-        <div class="panel">
-          <h2>Prompt & options</h2>
-          <label for="promptSelect">Saved prompts</label>
-          <select id="promptSelect"></select>
-          <div class="stack" style="margin-top:8px;">
-            <input id="newPromptTitle" type="text" placeholder="New prompt title" />
-            <div class="stack">
-              <button id="savePromptBtn" type="button">Save prompt</button>
-              <button id="updatePromptBtn" type="button" class="secondary">Update selected</button>
-              <button id="deletePromptBtn" type="button" class="secondary">Delete selected</button>
+        <div class="grid two">
+          <div class="panel">
+            <h2>Window selection</h2>
+            <label for="windowSelect">Open windows</label>
+            <select id="windowSelect"></select>
+            <div class="stack" style="margin-top:8px;">
+              <button id="refreshBtn" type="button">Refresh</button>
+              <button id="captureBtn" type="button">Capture</button>
             </div>
           </div>
-          <label for="promptText" style="margin-top:8px;">Prompt text</label>
-          <textarea id="promptText" placeholder="Select a saved prompt or type your own"></textarea>
-          <div class="stack" style="margin-top:8px;">
-            <input id="configFileInput" type="file" accept="text/plain" />
-            <button id="uploadConfigBtn" type="button" class="secondary">Upload .txt prompts</button>
-          </div>
-          <div class="stack" style="margin-top:12px;">
-            <label style="display:flex; align-items:center; gap:6px; font-weight: normal; color: var(--text);"><input type="checkbox" id="includeImages" checked />Include images</label>
-            <button id="sendAiBtn" type="button">Generate response</button>
+          <div class="panel">
+            <h2>App settings</h2>
+            <label for="tesseractPath">Tesseract executable</label>
+            <input id="tesseractPath" type="text" placeholder="Path to tesseract.exe" value="{{ tesseract_path }}" />
+            <label for="apiKey" style="margin-top:8px;">OpenAI API key</label>
+            <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
+            <div id="apiKeyStatus" class="label-muted" style="margin-top:6px;">No API key saved.</div>
+            <div class="label-muted" style="margin-top:4px;">Stored in configs/api_key.txt. Leave blank to clear.</div>
+            <div style="margin-top:8px;">
+              <button id="saveSettingsBtn" type="button">Save settings</button>
+            </div>
+            <div class="label-muted" style="margin-top:10px;">Detected crop box: {{ crop_box if crop_box else 'None' }}</div>
           </div>
         </div>
-      </div>
-      <div class="page-actions">
-        <button class="ghost" type="button" data-page-target="2">Back to capture</button>
-        <button type="button" data-page-target="4" id="jumpToResultBtn" class="secondary">View last result</button>
-      </div>
-    </section>
+        <div class="page-nav">
+          <div class="label-muted">Need fullscreen? <button id="fullscreenBtn" type="button" class="ghost">Toggle</button></div>
+          <div class="nav-buttons">
+            <button type="button" data-page-target="2">Go to capture</button>
+          </div>
+        </div>
+      </section>
 
-    <section class="page" data-page="4">
-      <div class="page-heading">
-        <div class="title">Page 4 · Result</div>
-        <div class="label-muted">Raw output plus a formatted view for Markdown and LaTeX.</div>
-      </div>
-      <div class="result-grid">
-        <div class="panel">
-          <h3>Raw response</h3>
-          <pre id="aiRawResponse"></pre>
+      <section class="page" data-page="2">
+        <div class="page-heading">
+          <div class="title">Page 2 · Capture</div>
+          <div class="label-muted">Grab an image, crop it, and review OCR before queuing.</div>
         </div>
-        <div class="panel">
-          <h3>Formatted view</h3>
-          <div class="rendered-box" id="aiRenderedResponse">Run a request to see results.</div>
+        <div class="grid two">
+          <div class="panel">
+            <h2>Preview & crop</h2>
+            {% if has_capture %}
+            <div id="preview-container">
+              <img id="captureImage" src="/image" alt="Capture preview" />
+              <div id="crop-overlay"></div>
+            </div>
+            {% else %}
+            <div>No capture yet. Select a window and click Capture.</div>
+            <div id="preview-container" style="display:none;">
+              <img id="captureImage" src="" alt="Capture preview" />
+              <div id="crop-overlay"></div>
+            </div>
+            {% endif %}
+            <div class="stack" style="margin-top: 12px;">
+              <button id="startCropBtn" type="button">Select crop area</button>
+              <button id="clearCropBtn" type="button" class="secondary">Clear crop</button>
+              <button id="ocrBtn" type="button">Run OCR</button>
+            </div>
+            <div id="cropInfo" class="label-muted" style="margin-top:6px;"></div>
+          </div>
+          <div class="panel">
+            <h2>OCR output</h2>
+            <pre id="ocrOutput"></pre>
+            <div class="stack" style="margin-top:8px;">
+              <button id="queueBtn" type="button">Save to queue</button>
+              <button id="clearQueueBtn" type="button" class="secondary">Clear queue</button>
+            </div>
+            <div id="queueStatus" class="label-muted" style="margin-top:6px;"></div>
+          </div>
         </div>
-      </div>
-      <div class="page-actions">
-        <button class="ghost" type="button" data-page-target="2">Capture again</button>
-        <button type="button" data-page-target="1">Back to setup</button>
-      </div>
-    </section>
+        <div class="page-nav">
+          <div class="nav-buttons">
+            <button class="ghost" type="button" data-page-target="1">Back to setup</button>
+            <button type="button" data-page-target="3">Next: submit</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" data-page="3">
+        <div class="page-heading">
+          <div class="title">Page 3 · Submit</div>
+          <div class="label-muted">Queue items on the left, prompt and options on the right.</div>
+        </div>
+        <div class="grid two">
+          <div class="panel">
+            <h2>Queued captures</h2>
+            <div class="stack" style="margin-bottom:8px;">
+              <span class="tag" id="queueCount">0/10 queued</span>
+              <span class="label-muted">Add more items from the Capture page if needed.</span>
+            </div>
+            <ul class="queue-list" id="queueList"></ul>
+          </div>
+          <div class="panel">
+            <h2>Prompt & options</h2>
+            <label for="promptSelect">Saved prompts</label>
+            <select id="promptSelect"></select>
+            <div class="stack" style="margin-top:8px;">
+              <input id="newPromptTitle" type="text" placeholder="New prompt title" />
+              <div class="stack">
+                <button id="savePromptBtn" type="button">Save prompt</button>
+                <button id="updatePromptBtn" type="button" class="secondary">Update selected</button>
+                <button id="deletePromptBtn" type="button" class="secondary">Delete selected</button>
+              </div>
+            </div>
+            <label for="promptText" style="margin-top:8px;">Prompt text</label>
+            <textarea id="promptText" placeholder="Select a saved prompt or type your own"></textarea>
+            <div class="stack" style="margin-top:8px;">
+              <input id="configFileInput" type="file" accept="text/plain" />
+              <button id="uploadConfigBtn" type="button" class="secondary">Upload .txt prompts</button>
+            </div>
+            <div class="stack" style="margin-top:12px;">
+              <label style="display:flex; align-items:center; gap:6px; font-weight: normal; color: var(--text);"><input type="checkbox" id="includeImages" checked />Include images</label>
+              <button id="sendAiBtn" type="button">Generate response</button>
+            </div>
+          </div>
+        </div>
+        <div class="page-nav">
+          <div class="nav-buttons">
+            <button class="ghost" type="button" data-page-target="2">Back to capture</button>
+            <button type="button" data-page-target="4" id="jumpToResultBtn" class="secondary">View last result</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" data-page="4">
+        <div class="page-heading">
+          <div class="title">Page 4 · Result</div>
+          <div class="label-muted">Raw output plus a formatted view for Markdown and LaTeX.</div>
+        </div>
+        <div class="result-grid">
+          <div class="panel">
+            <h3>Raw response</h3>
+            <pre id="aiRawResponse"></pre>
+          </div>
+          <div class="panel">
+            <h3>Formatted view</h3>
+            <div class="rendered-box" id="aiRenderedResponse">Run a request to see results.</div>
+          </div>
+        </div>
+        <div class="page-nav">
+          <div class="nav-buttons">
+            <button class="ghost" type="button" data-page-target="2">Capture again</button>
+            <button type="button" data-page-target="1">Back to setup</button>
+          </div>
+        </div>
+      </section>
+    </div>
   </div>
 
   <script>
@@ -959,6 +949,8 @@ _PAGE_TEMPLATE = """
       let naturalHeight = 0;
       let isSelectingCrop = false;
       let firstCropPoint = null;
+      let activePointerId = null;
+      let pointerMoved = false;
       let lastOcrText = '';
       let lastOcrImage = null;
       let queueItems = [];
@@ -1073,6 +1065,40 @@ _PAGE_TEMPLATE = """
     function setupCropping() {
       const img = document.getElementById('captureImage');
       const overlay = document.getElementById('crop-overlay');
+
+      function pointFromEvent(event) {
+        const rect = img.getBoundingClientRect();
+        return {
+          x: Math.max(0, Math.min(rect.width, event.clientX - rect.left)),
+          y: Math.max(0, Math.min(rect.height, event.clientY - rect.top)),
+          rect,
+        };
+      }
+
+      function commitCrop(endPoint) {
+        const { rect, x, y } = endPoint;
+        if (!firstCropPoint) return;
+        const box = {
+          x: Math.min(firstCropPoint.x, x),
+          y: Math.min(firstCropPoint.y, y),
+          width: Math.abs(x - firstCropPoint.x),
+          height: Math.abs(y - firstCropPoint.y),
+        };
+        cropBox = {
+          x: Math.round(box.x * (naturalWidth / rect.width)),
+          y: Math.round(box.y * (naturalHeight / rect.height)),
+          width: Math.round(box.width * (naturalWidth / rect.width)),
+          height: Math.round(box.height * (naturalHeight / rect.height)),
+          display: box,
+        };
+        updateCropOverlay(box);
+        isSelectingCrop = false;
+        firstCropPoint = null;
+        activePointerId = null;
+        pointerMoved = false;
+        document.getElementById('cropInfo').textContent = `Crop set: (${cropBox.x}, ${cropBox.y}, ${cropBox.width}, ${cropBox.height})`;
+        document.getElementById('status').textContent = 'Crop saved. Run OCR to continue.';
+      }
       img.addEventListener('load', () => {
         const rect = img.getBoundingClientRect();
         naturalWidth = img.naturalWidth;
@@ -1081,51 +1107,47 @@ _PAGE_TEMPLATE = """
         overlay.style.height = `${rect.height}px`;
       });
 
-      img.addEventListener('mousedown', (event) => {
+      img.addEventListener('pointerdown', (event) => {
         if (!isSelectingCrop) return;
-        const rect = img.getBoundingClientRect();
-        firstCropPoint = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+        const point = pointFromEvent(event);
+        pointerMoved = false;
+        if (!firstCropPoint) {
+          firstCropPoint = { x: point.x, y: point.y };
+          activePointerId = event.pointerId;
+          img.setPointerCapture(event.pointerId);
+          updateCropOverlay({ x: point.x, y: point.y, width: 2, height: 2 });
+          document.getElementById('status').textContent = 'Tap the bottom-right corner (or drag) to finish the crop.';
+          return;
+        }
+        commitCrop(point);
       });
 
-      img.addEventListener('mousemove', (event) => {
-        if (!isSelectingCrop || !firstCropPoint) return;
-        const rect = img.getBoundingClientRect();
-        const x = event.clientX - rect.left;
-        const y = event.clientY - rect.top;
-        const width = x - firstCropPoint.x;
-        const height = y - firstCropPoint.y;
+      img.addEventListener('pointermove', (event) => {
+        if (!isSelectingCrop || !firstCropPoint || event.pointerId !== activePointerId) return;
+        const point = pointFromEvent(event);
+        pointerMoved = pointerMoved || Math.abs(point.x - firstCropPoint.x) > 2 || Math.abs(point.y - firstCropPoint.y) > 2;
         const box = {
-          x: Math.min(firstCropPoint.x, x),
-          y: Math.min(firstCropPoint.y, y),
-          width: Math.abs(width),
-          height: Math.abs(height)
+          x: Math.min(firstCropPoint.x, point.x),
+          y: Math.min(firstCropPoint.y, point.y),
+          width: Math.abs(point.x - firstCropPoint.x),
+          height: Math.abs(point.y - firstCropPoint.y),
         };
         updateCropOverlay(box);
       });
 
-      img.addEventListener('mouseup', (event) => {
-        if (!isSelectingCrop || !firstCropPoint) return;
-        const rect = img.getBoundingClientRect();
-        const x = event.clientX - rect.left;
-        const y = event.clientY - rect.top;
-        const width = x - firstCropPoint.x;
-        const height = y - firstCropPoint.y;
-        cropBox = {
-          x: Math.round(Math.min(firstCropPoint.x, x) * (naturalWidth / rect.width)),
-          y: Math.round(Math.min(firstCropPoint.y, y) * (naturalHeight / rect.height)),
-          width: Math.round(Math.abs(width) * (naturalWidth / rect.width)),
-          height: Math.round(Math.abs(height) * (naturalHeight / rect.height)),
-          display: {
-            x: Math.min(firstCropPoint.x, x),
-            y: Math.min(firstCropPoint.y, y),
-            width: Math.abs(width),
-            height: Math.abs(height)
-          }
-        };
-        updateCropOverlay(cropBox.display);
-        isSelectingCrop = false;
-        firstCropPoint = null;
-        document.getElementById('cropInfo').textContent = `Crop set: (${cropBox.x}, ${cropBox.y}, ${cropBox.width}, ${cropBox.height})`;
+      img.addEventListener('pointerup', (event) => {
+        if (!isSelectingCrop || !firstCropPoint || event.pointerId !== activePointerId) return;
+        const point = pointFromEvent(event);
+        if (pointerMoved) {
+          commitCrop(point);
+        }
+        img.releasePointerCapture(event.pointerId);
+      });
+
+      img.addEventListener('click', (event) => {
+        if (!isSelectingCrop || !firstCropPoint || pointerMoved) return;
+        const point = pointFromEvent(event);
+        commitCrop(point);
       });
     }
 
@@ -1135,13 +1157,15 @@ _PAGE_TEMPLATE = """
         return;
       }
       isSelectingCrop = true;
-      document.getElementById('status').textContent = 'Click and drag on the image to set a crop.';
+      document.getElementById('status').textContent = 'Tap once for the top-left corner, then tap bottom-right (drag also works).';
     }
 
     function clearCrop(skipMessage = false) {
       cropBox = null;
       firstCropPoint = null;
       isSelectingCrop = false;
+      activePointerId = null;
+      pointerMoved = false;
       updateCropOverlay(null);
       document.getElementById('cropInfo').textContent = '';
       if (!skipMessage) {
@@ -1429,10 +1453,6 @@ _PAGE_TEMPLATE = """
         document.querySelectorAll('.page').forEach(page => {
           page.classList.toggle('active', Number(page.dataset.page) === pageNumber);
         });
-        document.querySelectorAll('.step').forEach(step => {
-          step.classList.toggle('active', Number(step.dataset.pageTarget) === pageNumber);
-        });
-        window.scrollTo({ top: 0, behavior: 'smooth' });
       }
 
       function bindNavigation() {
