@@ -465,6 +465,15 @@ def _run_ocr(image: "Image.Image") -> str:
     if pytesseract is None:
         raise RuntimeError("pytesseract is not installed.")
 
+    _apply_tesseract_path()
+
+    if image.mode == "RGBA":
+        # Tesseract expects 3-channel data; flatten any alpha channel first.
+        image = image.convert("RGB")
+    elif image.mode not in ("RGB", "L"):
+        image = image.convert("RGB")
+
+    return pytesseract.image_to_string(image).strip()
 
 
 def _parse_crop_request(data: Dict[str, object], image: "Image.Image") -> Tuple[Optional[Tuple[int, int, int, int]], Optional[str]]:
@@ -515,7 +524,6 @@ def _parse_crop_request(data: Dict[str, object], image: "Image.Image") -> Tuple[
         return None, "Crop area is empty after normalization."
 
     return (l, t, r, b), None
-    return pytesseract.image_to_string(image).strip()
 
 
 # ---------- API routes ----------
