@@ -791,7 +791,7 @@ def index() -> str:
 # ---------- Page template ----------
 
 
-_PAGE_TEMPLATE = """
+_PAGE_TEMPLATE = r"""
 <!doctype html>
 <html lang="en">
 <head>
@@ -854,6 +854,7 @@ _PAGE_TEMPLATE = """
     .label-muted { color: var(--muted); font-size: 13px; }
     .result-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
     .rendered-box { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 12px; min-height: 240px; overflow: auto; }
+    .math-block { margin: 12px 0; }
     .tag { display: inline-block; background: var(--highlight); border-radius: 6px; padding: 4px 8px; border: 1px solid var(--border); font-size: 12px; }
     .page-nav { margin-top: auto; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 8px; border-top: 1px solid var(--border); }
     .nav-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -1026,15 +1027,11 @@ _PAGE_TEMPLATE = """
       <section class="page" data-page="5">
         <div class="page-heading">
           <div class="title">Page 5 · Result</div>
-          <div class="label-muted">Raw output plus a formatted view for Markdown and LaTeX.</div>
+          <div class="label-muted">Rendered response with Markdown and LaTeX.</div>
         </div>
         <div class="result-grid">
           <div class="panel">
-            <h3>Raw response</h3>
-            <pre id="aiRawResponse"></pre>
-          </div>
-          <div class="panel">
-            <h3>Formatted view</h3>
+            <h3>Response</h3>
             <div class="rendered-box" id="aiRenderedResponse">Run a request to see results.</div>
           </div>
         </div>
@@ -1062,6 +1059,46 @@ _PAGE_TEMPLATE = """
       const maxQueueItems = 10;
       let promptEntries = [];
       let currentPage = 1;
+
+      marked.setOptions({ gfm: true, breaks: true, mangle: false, headerIds: false });
+
+      marked.use({
+        extensions: [
+          {
+            name: 'math',
+            level: 'inline',
+            start(src) {
+              const match = src.match(/\\\(|\\\[|\$\$/);
+              return match ? match.index : undefined;
+            },
+            tokenizer(src) {
+              const inline = src.match(/^\\\((.+?)\\\)/s);
+              if (inline) {
+                return { type: 'math_inline', raw: inline[0], text: inline[1] };
+              }
+
+              const displayBracket = src.match(/^\\\[(.+?)\\\]/s);
+              if (displayBracket) {
+                return { type: 'math_block', raw: displayBracket[0], text: displayBracket[1] };
+              }
+
+              const displayDollar = src.match(/^\$\$([\s\S]+?)\$\$/);
+              if (displayDollar) {
+                return { type: 'math_block', raw: displayDollar[0], text: displayDollar[1] };
+              }
+
+              return undefined;
+            },
+            renderer(token) {
+              if (token.type === 'math_block') {
+                return `<div class="math-block">\\[${token.text}\\]</div>`;
+              }
+
+              return `<span class="math-inline">\\(${token.text}\\)</span>`;
+            }
+          }
+        ]
+      });
 
     async function refreshWindows() {
       const res = await fetch('/api/windows');
@@ -1559,8 +1596,18 @@ async function runOcr() {
           target.textContent = 'No response yet.';
           return;
         }
-        const html = DOMPurify.sanitize(marked.parse(content));
-        target.innerHTML = html;
+        let html = '';
+        try {
+          html = marked.parse(content);
+        } catch (err) {
+          target.textContent = content;
+          return;
+        }
+
+        target.innerHTML = DOMPurify.sanitize(html, {
+          ALLOWED_ATTR: ['href', 'name', 'target', 'class', 'rel', 'id'],
+        });
+
         if (window.MathJax && window.MathJax.typesetPromise) {
           window.MathJax.typesetPromise([target]).catch(() => {});
         }
@@ -1583,7 +1630,6 @@ async function runOcr() {
         }
         status.textContent = 'AI response ready.';
         document.getElementById('ocrOutput').textContent = data.response || '';
-        document.getElementById('aiRawResponse').textContent = data.response || '';
         renderMarkdown(data.response || '');
         await clearAfterResult();
         setPage(5);
